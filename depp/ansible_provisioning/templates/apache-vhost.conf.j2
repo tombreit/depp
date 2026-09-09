@@ -1,0 +1,103 @@
+<MDomainSet {{ inventory_hostname }}>
+    # mod_md: Automated certificate management via ACME
+    # ACME settings are provided via depp.toml [acme]
+    MDCertificateAuthority {{ acme_certificate_authority }}
+    MDRequireHttps temporary
+    MDCertificateAgreement accepted
+    MDContactEmail {{ acme_contact_email }}
+{% if acme_external_account_binding %}
+    MDExternalAccountBinding {{ acme_external_account_binding }}
+{% endif %}
+    # Only the fqdn above is a member of this managed certificate. mod_md
+    # defaults to MDMembers auto, which would pull every ServerAlias of the
+    # matching vhosts into the cert — but aliases are typically pointed at an
+    # upstream proxy that terminates their TLS itself, so their DNS does NOT
+    # resolve here. ACME validation for such a name fails and can break renewal
+    # for the fqdn that does work. Keep this manual.
+    MDMembers manual
+</MDomainSet>
+
+
+<VirtualHost *:80>
+    ServerName {{ inventory_hostname }}
+{% for alias in server_aliases | default([]) %}
+    ServerAlias {{ alias }}
+{% endfor %}
+
+    StrictHostCheck On
+
+    # Redirect all plain HTTP to HTTPS, preserving the requested hostname so an
+    # alias is not bounced onto the fqdn (which would defeat the point of
+    # serving it under a friendlier public name).
+    # ACME http-01 challenges must stay reachable over plain HTTP, or mod_md
+    # cannot answer them and certificate renewal fails.
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=302,L]
+
+    ErrorLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_error.log
+    CustomLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_access.log combined
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName {{ inventory_hostname }}
+{% for alias in server_aliases | default([]) %}
+    ServerAlias {{ alias }}
+{% endfor %}
+
+    # HTTP/2 for clients
+    Protocols h2 http/1.1
+
+    # Deny requests to bare IP addresses
+    # https://httpd.apache.org/docs/current/mod/core.html#stricthostcheck
+    # By setting StrictHostCheck to ON, the server will return an HTTP 400 error
+    # if the requested hostname hasn't been explicitly listed by either
+    # ServerName or ServerAlias in the virtual host that best matches the
+    # details of the incoming connection.
+    StrictHostCheck On
+
+    # SSL managed by mod_md
+    SSLEngine On
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+
+    # During a deploy the pod is briefly down (single-pod model: stop-then-start),
+    # so the backend is unreachable and mod_proxy returns 503. Serve a clean
+    # "deployment in progress" page with Retry-After instead of the raw proxy
+    # error. The page is served locally, so it must be excluded from the proxy.
+    ProxyPass /__depp_maintenance.html !
+    Alias /__depp_maintenance.html /var/www/depp/maintenance.html
+    <Directory "/var/www/depp">
+        Require all granted
+    </Directory>
+    ErrorDocument 503 /__depp_maintenance.html
+    # Tell clients/monitors this is a short, retryable state (not a real outage).
+    Header always set Retry-After "5" "expr=%{REQUEST_STATUS} == 503"
+
+    # Plain HTTP to Caddy inside the pod — no TLS needed on localhost.
+    # 127.0.0.1 forces IPv4 (Apache resolves "localhost" to [::1]).
+    ProxyPass / "http://127.0.0.1:{{ caddy_host_port }}/"
+    ProxyPassReverse / "http://127.0.0.1:{{ caddy_host_port }}/"
+
+    # Forward the original scheme so the app sees HTTPS behind the proxy.
+    RequestHeader set X-Forwarded-Proto "https"
+
+    # Collapse X-Forwarded-Host to a single value. mod_proxy *merges* this
+    # header with the incoming Host rather than replacing it, so when something
+    # upstream already set it (a second reverse proxy in front of this host)
+    # the backend receives "example.org, example.org". Frameworks that trust
+    # the header verbatim — e.g. Django with USE_X_FORWARDED_HOST — then reject
+    # the request as an invalid host. Dropping it here makes mod_proxy emit
+    # exactly one value, taken from the Host we received. That is correct
+    # because ProxyPreserveHost is On above and any upstream proxy is required
+    # to preserve Host as well (see "Serving additional hostnames" in README).
+    # X-Forwarded-For is deliberately left alone: accumulating is correct there.
+    RequestHeader unset X-Forwarded-Host
+
+    ProxyVia Off
+
+    LogLevel info ssl:warn
+    ErrorLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_error.log
+    CustomLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_access.log combined
+</VirtualHost>

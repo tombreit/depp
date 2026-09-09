@@ -1,0 +1,25 @@
+# Minimal Wagtail app image. psycopg[binary] bundles libpq, so no apt step needed.
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Collect static into the image at build time, so the deploy only has to copy
+# the files into the shared volume (see the copy-static initContainer in
+# container/kube.yaml) instead of running collectstatic on every pod start.
+# Settings load without prod secrets (SECRET_KEY has a dev default, DATABASE_URL
+# is unused by collectstatic), so no build-time env is needed.
+RUN python manage.py collectstatic --noinput
+
+EXPOSE 8000
+
+# gunicorn binds :8000; the Caddy sidecar listens on :80, serves /static and
+# /media, and proxies everything else to gunicorn.
+CMD ["gunicorn", "myapp.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]

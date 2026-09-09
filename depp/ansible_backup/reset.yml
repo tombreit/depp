@@ -1,0 +1,127 @@
+---
+# Reset playbook for rootless-podman deployments.
+#
+# Lists the contents of each named podman volume in backup_dirs, displaying
+# paths as seen from inside the container. When do_delete is true, all
+# contents of those volumes are removed (the volumes themselves are preserved).
+#
+# The pod must be running; the playbook aborts with an error if it is not.
+# Volume data is accessed directly via the host-side mountpoint.
+# Container-internal paths are resolved via podman container inspect.
+#
+# Variables embedded in the inventory:
+#   pod_name    — pod name from kube.yaml metadata.name (what podman
+#                 kube play names the pod; may differ from app_name)
+#   backup_dirs — list of named podman volume names
+#
+# Extra variables (passed per invocation):
+#   do_delete   — boolean; when false only lists files, when true also deletes
+
+- name: Reset Named Podman Volume Contents
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: auto_silent
+    do_delete: false
+
+  tasks:
+    - name: Gather pod info
+      containers.podman.podman_pod_info:
+        name: "{{ pod_name }}"
+      register: pod_info
+
+    # 'Degraded' (some containers exited) is fine for a reset: the containers
+    # still exist, so volume mount destinations can be resolved.
+    - name: Fail if pod is not running
+      ansible.builtin.fail:
+        msg: >-
+          Pod '{{ pod_name }}' is not running on {{ inventory_hostname }}
+          (state: {{ pod_info.pods[0].State | default('absent') }}).
+          Start the pod before resetting.
+      when: >-
+        pod_info.pods | length == 0 or
+        pod_info.pods[0].State | lower not in ['running', 'degraded']
+
+    - name: Gather info for all backup volumes
+      containers.podman.podman_volume_info:
+        name: "{{ item }}"
+      register: vol_info_results
+      loop: "{{ backup_dirs }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Inspect all pod containers to resolve volume mount destinations
+      containers.podman.podman_container_info:
+        name: "{{ pod_info.pods[0].Containers | map(attribute='Id') | list }}"
+      register: containers_info
+
+    - name: Build volume-name to container-destination map
+      ansible.builtin.set_fact:
+        vol_dest_map: >-
+          {{
+            containers_info.containers
+            | map(attribute='Mounts')
+            | flatten
+            | selectattr('Name', 'defined')
+            | items2dict(key_name='Name', value_name='Destination')
+          }}
+
+    - name: Find all files in each volume
+      ansible.builtin.find:
+        paths: "{{ item.volumes[0].Mountpoint }}"
+        recurse: true
+        file_type: any
+      register: vol_files_results
+      loop: "{{ vol_info_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Display volume contents as container-internal paths
+      ansible.builtin.debug:
+        msg: >-
+          Volume '{{ item.item.item }}'
+          (container path: {{ vol_dest_map[item.item.item] | default('unknown') }})
+          — {{ item.files | length }} file(s):
+          {{ item.files
+             | map(attribute='path')
+             | map('replace',
+                   item.item.volumes[0].Mountpoint,
+                   vol_dest_map[item.item.item] | default(item.item.volumes[0].Mountpoint))
+             | sort
+             | list }}
+      loop: "{{ vol_files_results.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+
+    # -------------------------------------------------------------------------
+    # Deletion — only when do_delete is true
+    # -------------------------------------------------------------------------
+
+    - name: Find top-level entries to delete in each volume
+      ansible.builtin.find:
+        paths: "{{ item.volumes[0].Mountpoint }}"
+        recurse: false
+        file_type: any
+      register: vol_toplevel_results
+      loop: "{{ vol_info_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: do_delete | bool
+
+    - name: Delete all contents of each volume
+      ansible.builtin.file:
+        path: "{{ entry.path }}"
+        state: absent
+      loop: "{{ vol_toplevel_results.results | map(attribute='files') | flatten }}"
+      loop_control:
+        loop_var: entry
+        label: "{{ entry.path }}"
+      when: do_delete | bool
+
+    - name: Reset complete
+      ansible.builtin.debug:
+        msg: >-
+          Reset of {{ backup_dirs | length }} volume(s) on
+          {{ inventory_hostname }} complete.
+      when: do_delete | bool

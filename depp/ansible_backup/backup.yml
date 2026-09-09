@@ -1,0 +1,67 @@
+---
+# Backup playbook for rootless-podman deployments.
+#
+# Fetches the contents of each named podman volume listed in backup_dirs
+# to the local backup_local_dest directory, preserving volume names as
+# top-level subdirectories.
+#
+# The pod must be running; the playbook aborts with an error if it is not.
+# Volume data is accessed directly via the host-side mountpoint — no
+# temporary files or podman cp required.
+#
+# Variables embedded in the inventory:
+#   pod_name          — pod name from kube.yaml metadata.name (what podman
+#                       kube play names the pod; may differ from app_name)
+#   backup_dirs       — list of named podman volume names
+#   backup_local_dest — absolute local path for this backup run
+
+- name: Back Up Named Podman Volumes
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: auto_silent
+
+  tasks:
+    - name: Gather pod info
+      containers.podman.podman_pod_info:
+        name: "{{ pod_name }}"
+      register: pod_info
+
+    # 'Degraded' (some containers exited) is fine for a backup: volume data
+    # is read host-side, independent of container health.
+    - name: Fail if pod is not running
+      ansible.builtin.fail:
+        msg: >-
+          Pod '{{ pod_name }}' is not running on {{ inventory_hostname }}
+          (state: {{ pod_info.pods[0].State | default('absent') }}).
+          Start the pod before taking a backup.
+      when: >-
+        pod_info.pods | length == 0 or
+        pod_info.pods[0].State | lower not in ['running', 'degraded']
+
+    - name: Gather info for all backup volumes
+      containers.podman.podman_volume_info:
+        name: "{{ item }}"
+      register: vol_info_results
+      loop: "{{ backup_dirs }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Synchronize each volume to local backup
+      ansible.posix.synchronize:
+        src: "{{ item.volumes[0].Mountpoint }}/"
+        dest: "{{ backup_local_dest }}/{{ item.item }}/"
+        mode: pull
+        rsync_opts:
+          - "--archive"
+          - "--compress"
+      loop: "{{ vol_info_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Backup complete
+      ansible.builtin.debug:
+        msg: >-
+          Backup of {{ backup_dirs | length }} volume(s) from
+          {{ inventory_hostname }} saved to {{ backup_local_dest }}

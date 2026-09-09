@@ -1,0 +1,15 @@
+*.egg-info/
+.venv/
+__pycache__/
+
+/build/
+/dist/
+
+.pytest_cache/
+.ruff_cache/
+.ansible/
+
+/backups/
+/restores/
+
+/test_demo/

@@ -1,0 +1,212 @@
+# Host provisioning playbook for rootless-podman deployments.
+# This playbook runs with elevated privileges (become: true) to:
+#   - Install and configure podman for rootless operation
+#   - Create a dedicated deployment user matching the host.name
+#   - Create Apache reverse proxy configuration for the host
+#   - Apache reverse proxies to Caddy in container on configured port
+#
+# SSH key setup (handled in pre_tasks):
+#   - Ensures ~/.ssh/id_ed25519.depp exists locally (generated if missing)
+#   - Authorizes that key for the new deploy user on the remote host
+#
+# Variables:
+#   deploy_user_name — derived from inventory_hostname
+#   depp_ssh_key     — path to the dedicated depp SSH private key
+#
+
+- name: Prepare Host for Rootless Podman Deployment
+  hosts: all
+  gather_facts: true
+  become: true
+
+  vars:
+    ansible_python_interpreter: auto_silent
+
+    # Deployment user (same as hostname)
+    deploy_user_name: "{{ inventory_hostname }}"
+    deploy_user_home: "/home/{{ deploy_user_name }}"
+
+    # Dedicated SSH key for all depp deployments
+    depp_ssh_key: "~/.ssh/id_ed25519.depp"
+
+    # Apache configuration
+    apache_conf_path: "/etc/apache2/sites-available/{{ inventory_hostname }}.conf"
+    apache_enabled_path: "/etc/apache2/sites-enabled/{{ inventory_hostname }}.conf"
+
+  pre_tasks:
+    - name: Ensure dedicated depp SSH keypair exists locally
+      community.crypto.openssh_keypair:
+        path: "{{ depp_ssh_key }}"
+        type: ed25519
+        comment: "depp deployment key"
+        state: present
+      delegate_to: localhost
+      become: false
+      register: depp_keypair
+
+  tasks:
+    ###################################################################
+    # Podman Installation
+    ###################################################################
+
+    - name: Ensure Podman is installed
+      ansible.builtin.apt:
+        name:
+          - podman
+        state: present
+        update_cache: true
+
+    ###################################################################
+    # User creation
+    ###################################################################
+
+    - name: Ensure deployment user exists
+      ansible.builtin.user:
+        name: "{{ deploy_user_name }}"
+        comment: "Deployment user for {{ inventory_hostname }}"
+        shell: "/bin/bash"
+        home: "{{ deploy_user_home }}"
+        create_home: true
+        system: false
+        password: "!"
+        password_lock: true # Disable password login
+        state: present
+      register: user_creation
+
+    - name: Display user creation status
+      ansible.builtin.debug:
+        msg: "User {{ deploy_user_name }} {{ 'created' if user_creation.changed else 'already exists' }}"
+
+    - name: Authorize depp SSH key for deployment user
+      ansible.posix.authorized_key:
+        user: "{{ deploy_user_name }}"
+        key: "{{ depp_keypair.public_key }}"
+        state: present
+      when: not ansible_check_mode
+
+    # enable lingering so that user-scoped systemd services can start without an active login
+    - name: Enable lingering for deployment user
+      ansible.builtin.command:
+        cmd: "loginctl enable-linger {{ deploy_user_name }}"
+        creates: "/var/lib/systemd/linger/{{ deploy_user_name }}"
+
+    - name: Display configuration information
+      ansible.builtin.debug:
+        msg:
+          - "Deployment user: {{ deploy_user_name }}"
+          - "User home: {{ deploy_user_home }}"
+          - "Caddy Port: {{ caddy_host_port }} (from depp.toml)"
+
+    ###################################################################
+    # Apache reverse proxy configuration
+    ###################################################################
+
+    - name: Ensure Apache is installed
+      ansible.builtin.apt:
+        name:
+          - apache2
+        state: present
+        update_cache: true
+
+    - name: Ensure depp web asset directory exists
+      ansible.builtin.file:
+        path: /var/www/depp
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Served by Apache as ErrorDocument 503 while the pod restarts during a
+    # deploy, so clients see a clean "back in a moment" page, not a raw 503.
+    - name: Render deploy maintenance page
+      ansible.builtin.template:
+        src: "maintenance.html.j2"
+        dest: /var/www/depp/maintenance.html
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Renders the ACME external account binding (a CA credential) when one is
+    # configured, so the file must not be world-readable and must not be echoed
+    # into the Ansible log.
+    - name: Template Apache virtual host configuration
+      ansible.builtin.template:
+        src: "apache-vhost.conf.j2"
+        dest: "{{ apache_conf_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+      no_log: true
+      notify: Reload Apache
+
+    - name: Ensure required Apache modules are enabled
+      community.general.apache2_module:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - ssl
+        - md
+        - http2         # HTTP/2 for incoming client connections (Protocols h2)
+        - proxy
+        - proxy_http
+        - proxy_http2   # Required: ProxyPass uses h2:// scheme to avoid ALPN mismatch.
+                        # When mod_http2 is loaded and Protocols h2 is set, Apache
+                        # advertises h2 in ALPN even for https:// proxy connections.
+                        # Caddy then negotiates h2, but mod_proxy_http speaks HTTP/1.1
+                        # only — causing the SSL handshake to fail. Using h2:// with
+                        # mod_proxy_http2 resolves the protocol correctly end-to-end.
+        - headers
+        - proxy_wstunnel # For WebSocket support
+        - rewrite       # Required: the :80 vhost redirects to HTTPS with a
+                        # RewriteRule so the *requested* hostname is preserved.
+                        # mod_alias Redirect cannot echo back %{HTTP_HOST}, so
+                        # it would bounce every ServerAlias onto the fqdn.
+      notify: Reload Apache
+
+    - name: Enable Apache site
+      ansible.builtin.file:
+        src: "{{ apache_conf_path }}"
+        dest: "{{ apache_enabled_path }}"
+        state: link
+      notify: Reload Apache
+      when: not ansible_check_mode
+
+    ###################################################################
+    # Summary
+    ###################################################################
+
+    - name: Display host preparation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host preparation complete for {{ inventory_hostname }}"
+          - "Deployment user: {{ deploy_user_name }} ({{ deploy_user_home }})"
+          - "Lingering enabled for user {{ deploy_user_name }}"
+          - "Caddy Port: {{ caddy_host_port }} (from depp.toml)"
+          - "Apache config: {{ apache_conf_path }}"
+          - "Podman: Installed"
+      run_once: true
+
+  handlers:
+    - name: Validate Apache configuration before reload
+      ansible.builtin.command:
+        cmd: apachectl configtest
+      changed_when: false
+      listen: Reload Apache
+
+    - name: Reload Apache
+      ansible.builtin.service:
+        name: apache2
+        state: reloaded
+      listen: Reload Apache
+
+    - name: Validate Apache configuration before restart
+      ansible.builtin.command:
+        cmd: apachectl configtest
+      changed_when: false
+      listen: Restart Apache
+
+    - name: Restart Apache
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+      listen: Restart Apache

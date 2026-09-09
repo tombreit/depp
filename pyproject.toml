@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "depp"
+description = "Opinionated rootless Podman provisioning and deployment."
+readme = "README.md"
+license = "EUPL-1.2"
+license-files = ["LICENSE"]
+dynamic = ["version"]
+# Floor set by the `ansible` dependency below, which requires >=3.12.
+requires-python = ">=3.12"
+authors = [
+    { name = "Thomas Breitner", email = "mail@thms.de" },
+]
+keywords = ["ansible", "podman", "deployment", "provisioning", "rootless", "systemd"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    # The community package includes ansible-core and the curated collections
+    # used by depp, avoiding network-dependent Galaxy installs at command time.
+    "ansible>=14,<15",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    # Arrives transitively via ansible, but the Apache vhost template tests
+    # importorskip on it — declare it so they cannot silently skip.
+    "jinja2",
+    "ruff",
+]
+
+[project.urls]
+Homepage = "https://github.com/tombreit/depp"
+Repository = "https://github.com/tombreit/depp"
+Issues = "https://github.com/tombreit/depp/issues"
+
+[project.scripts]
+depp = "depp:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "depp.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["depp*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yml", "*.j2", "*.cfg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# The bundled demo project is third-party-shaped Django code, not depp's own.
+extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Test
+        run: pytest -q
+
+      # The playbooks are otherwise only exercised against a real host. A
+      # syntax error in reset.yml — which deletes volume contents — would
+      # otherwise ship undetected.
+      - name: Check playbook syntax
+        env:
+          ANSIBLE_CONFIG: depp/ansible_common/ansible.cfg
+        run: |
+          for playbook in depp/ansible_*/*.yml; do
+            echo "::group::$playbook"
+            ansible-playbook --syntax-check "$playbook"
+            echo "::endgroup::"
+          done

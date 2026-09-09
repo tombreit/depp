@@ -1,0 +1,25 @@
+[app]
+name = "wagtail-demo"
+project_root = "."
+# image_name defaults to name ("wagtail-demo"); the kube.yaml and `depp exec`
+# both rely on that, so leave it unless you know why you're changing it.
+
+[host]
+fqdn = "wagtail-demo.example.com"
+caddy_host_port = 8200
+
+[acme]
+contact_email = "admin@example.com"
+# Defaults to the Let's Encrypt *staging* CA. Switch to production once it works:
+# certificate_authority = "https://acme-v02.api.letsencrypt.org/directory"
+
+# Optional. After (re)starting the pod, depp polls the app over HTTP and only
+# reports the deploy as successful once it actually serves — so a crash-looping
+# build fails the deploy instead of looking green. Both fields have defaults:
+# [deploy]
+# health_path = "/"       # URL path polled on the published caddy port
+# health_timeout = 30     # seconds to keep polling before failing the deploy
+
+# No [backup] section needed: depp backs up every persistentVolumeClaim declared
+# in deploy/kube.yaml (here: wagtail-demo-media and wagtail-demo-pgdata). The
+# ephemeral "static" emptyDir is not a PVC, so it is excluded automatically.

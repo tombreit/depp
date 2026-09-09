@@ -1,0 +1,89 @@
+---
+# Restore playbook for rootless-podman deployments.
+#
+# Pushes the contents of each named volume directory from the local
+# restore_path to the corresponding volume mountpoint on the remote host.
+# The pod is stopped before the transfer and restarted after.
+#
+# --archive preserves permissions, ownership, and timestamps.
+# The transfer is ADDITIVE (no --delete): files created on the remote after
+# the backup was taken are left in place. Run `depp reset` first for a
+# clean-slate restore.
+#
+# Variables embedded in the inventory:
+#   pod_name      — pod name from kube.yaml metadata.name (what podman
+#                   kube play names the pod; may differ from app_name)
+#   app_name      — names the systemd service generated at deploy time
+#   backup_dirs   — list of named podman volume names (same as for backup)
+#   restore_path  — absolute local path of the backup directory to restore from
+
+- name: Restore Named Podman Volumes
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: auto_silent
+    service_name: "{{ app_name }}"
+
+  tasks:
+    - name: Gather pod info
+      containers.podman.podman_pod_info:
+        name: "{{ pod_name }}"
+      register: pod_info
+
+    - name: Fail if pod is not found
+      ansible.builtin.fail:
+        msg: >-
+          Pod '{{ pod_name }}' not found on {{ inventory_hostname }}.
+          Cannot restore without a known pod configuration.
+      when: pod_info.pods | length == 0
+
+    - name: Gather info for all restore volumes
+      containers.podman.podman_volume_info:
+        name: "{{ item }}"
+      register: vol_info_results
+      loop: "{{ backup_dirs }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Stop pod
+      ansible.builtin.systemd_service:
+        name: "{{ service_name }}"
+        scope: user
+        state: stopped
+
+    - name: Restore each volume from local backup
+      ansible.posix.synchronize:
+        src: "{{ restore_path }}/{{ item.item }}/"
+        dest: "{{ item.volumes[0].Mountpoint }}/"
+        mode: push
+        rsync_opts:
+          - "--archive"
+          - "--compress"
+      loop: "{{ vol_info_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Reload systemd and restart pod
+      ansible.builtin.systemd_service:
+        name: "{{ service_name }}"
+        scope: user
+        daemon_reload: true
+        state: started
+
+    - name: Query service status
+      ansible.builtin.command:
+        cmd: "systemctl --user status {{ service_name }}.service"
+      register: service_status_output
+      changed_when: false
+      failed_when: false
+
+    - name: Service status
+      ansible.builtin.debug:
+        var: service_status_output.stdout_lines
+
+    - name: Restore complete
+      ansible.builtin.debug:
+        msg: >-
+          Restored {{ backup_dirs | length }} volume(s) to
+          {{ inventory_hostname }} from {{ restore_path }}

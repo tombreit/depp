@@ -1,0 +1,7 @@
+# Real secrets — never commit. Copy from deploy/.env.example.
+/deploy/.env
+
+__pycache__/
+*.py[cod]
+/staticfiles/
+/media/

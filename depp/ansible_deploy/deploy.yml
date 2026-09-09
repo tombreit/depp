@@ -1,0 +1,244 @@
+---
+# Rootless-podman deployment playbook.
+#
+# Copies kube.yaml from the project repo to the remote host, generates the
+# systemd service unit from a bundled template, builds and transfers the
+# container image directly (no registry required).
+#
+# Variables injected via the CLI wrapper:
+#   app_version, local_repo_path, local_archive_dir — passed as extra vars (-e)
+#   pvc_volumes — passed as an extra var when applicable
+#   configmap_yaml — passed privately through the temporary inventory
+#   app_name, image_name, caddy_host_port — embedded in the inventory
+
+- name: Deploy Application with Rootless Podman
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: auto_silent
+
+    # Derived vars
+    build_file: "{{ containerfile | default('Containerfile') }}"
+    image_tag: "localhost/{{ image_name }}:{{ app_version }}"
+    image_latest: "localhost/{{ image_name }}:latest"
+    # The archive lives in a per-run private temp dir locally (created and
+    # removed by the CLI wrapper) and under the deploy user's home remotely —
+    # never in a shared, predictable /tmp path.
+    image_archive_filename: "{{ image_name }}_{{ app_version }}.tar"
+    local_image_archive_path: "{{ local_archive_dir }}/{{ image_archive_filename }}"
+    remote_image_archive_dir: "{{ ansible_facts['env']['HOME'] }}/.cache/depp"
+    remote_image_archive_path: "{{ remote_image_archive_dir }}/{{ image_archive_filename }}"
+    systemd_user_dir: "{{ ansible_facts['env']['HOME'] }}/.config/systemd/user"
+    remote_config_dir: "{{ ansible_facts['env']['HOME'] }}/config/{{ app_name }}"
+    local_kube_file: "{{ local_repo_path }}/deploy/kube.yaml"
+    service_name: "{{ app_name }}"
+    systemd_service_filename: "kube-pod.service.j2"
+
+  tasks:
+    ###################################################################
+    # Local tasks: Build image and save as archive
+    ###################################################################
+
+    - name: Localhost Tasks - Build and Prepare Image
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Debug - Print app version being deployed
+          ansible.builtin.debug:
+            msg: "Deploying {{ image_tag }} to {{ inventory_hostname }}"
+
+        - name: "Build local Podman Image: {{ image_tag }}"
+          containers.podman.podman_image:
+            name: "{{ image_tag }}"
+            path: "{{ local_repo_path }}"
+            state: build
+            force: true
+            build:
+              file: "{{ build_file }}"
+              force_rm: true
+
+        - name: Inspect Podman image
+          containers.podman.podman_image_info:
+            name: "{{ image_tag }}"
+          register: podman_image_inspect
+          changed_when: false
+
+        - name: Ensure old image archive does not exist locally
+          ansible.builtin.file:
+            path: "{{ local_image_archive_path }}"
+            state: absent
+
+        - name: Save local image as a .tar-archive
+          containers.podman.podman_save:
+            image: "{{ image_tag }}"
+            dest: "{{ local_image_archive_path }}"
+            format: "oci-archive"
+
+        - name: Stat saved image archive
+          ansible.builtin.stat:
+            path: "{{ local_image_archive_path }}"
+          register: image_archive_stat
+          changed_when: false
+
+        - name: Show Podman image size and archive size
+          ansible.builtin.debug:
+            msg: "Image size: {{ podman_image_inspect.images[0].Size | human_readable }}, archive size: {{ image_archive_stat.stat.size | human_readable }}"
+          when: not ansible_check_mode
+
+    ###################################################################
+    # Transfer image to remote host
+    ###################################################################
+
+    - name: Ensure remote archive directory exists
+      ansible.builtin.file:
+        path: "{{ remote_image_archive_dir }}"
+        state: directory
+        mode: "0700"
+      when:
+        - ansible_connection != "local"
+        - not ansible_check_mode
+
+    # set_fact renders to a string, so store the epoch timestamp (a plain
+    # number survives the round-trip; a datetime would not).
+    - name: Record synchronize start time
+      ansible.builtin.set_fact:
+        sync_start_ts: "{{ now().timestamp() }}"
+      when:
+        - ansible_connection != "local"
+        - not ansible_check_mode
+
+    - name: Synchronize image archive to remote server
+      become: false
+      when:
+        - ansible_connection != "local"
+        - not ansible_check_mode
+      ansible.posix.synchronize:
+        src: "{{ local_image_archive_path }}"
+        dest: "{{ remote_image_archive_path }}"
+        mode: push
+        rsync_opts:
+          - "--compress"
+
+    - name: Report synchronize duration
+      ansible.builtin.debug:
+        msg: "Synchronize took {{ '%.2f' | format(now().timestamp() - (sync_start_ts | float)) }}s"
+      when:
+        - ansible_connection != "local"
+        - not ansible_check_mode
+
+    ###################################################################
+    # Remote tasks: Copy config, load image, start pod
+    ###################################################################
+
+    - name: "Remote host tasks on {{ inventory_hostname }}"
+      block:
+        - name: Ensure directories exist
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0750"
+          loop:
+            - "{{ systemd_user_dir }}"
+            - "{{ remote_config_dir }}"
+
+        - name: Ensure podman volumes exist
+          containers.podman.podman_volume:
+            name: "{{ item }}"
+            state: present
+          loop: "{{ pvc_volumes | default([]) }}"
+
+        - name: Copy kube.yaml to remote config directory
+          ansible.builtin.copy:
+            src: "{{ local_kube_file }}"
+            dest: "{{ remote_config_dir }}/kube.yaml"
+            mode: "0644"
+
+        - name: "Generate systemd service file {{ systemd_service_filename }}"
+          ansible.builtin.template:
+            src: "{{ systemd_service_filename }}"
+            dest: "{{ systemd_user_dir }}/{{ app_name }}.service"
+            mode: "0644"
+
+        - name: Copy ConfigMap to remote config directory
+          ansible.builtin.copy:
+            content: "{{ configmap_yaml }}"
+            dest: "{{ remote_config_dir }}/configmap.yaml"
+            mode: "0640"
+          no_log: true
+          when: configmap_yaml is defined
+
+        # Without this, dropping deploy/.env would regenerate the service unit
+        # without --configmap but leave the previous secrets on disk forever.
+        - name: Remove stale ConfigMap when the project no longer ships one
+          ansible.builtin.file:
+            path: "{{ remote_config_dir }}/configmap.yaml"
+            state: absent
+          when: configmap_yaml is not defined
+
+        - name: "Load image {{ remote_image_archive_path }} from archive"
+          containers.podman.podman_load:
+            input: "{{ remote_image_archive_path }}"
+          when: ansible_connection != "local"
+
+        - name: "Tag image {{ image_tag }} as latest"
+          containers.podman.podman_tag:
+            image: "{{ image_tag }}"
+            target_names:
+              - "{{ image_latest }}"
+
+        - name: "Reload systemd and restart pod {{ service_name }}"
+          ansible.builtin.systemd_service:
+            name: "{{ service_name }}"
+            scope: user
+            daemon_reload: true
+            enabled: true
+            state: restarted
+          when: not ansible_check_mode
+
+        # Health gate: the systemd unit going "active" only means `podman kube
+        # play` returned — not that the app serves. Poll the published caddy
+        # port until it answers, so the deploy fails loudly on a crash-looping
+        # build instead of reporting a green deploy of a dead app.
+        - name: "Wait for the app to serve on 127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
+            method: GET
+            status_code: [200, 301, 302, 401, 403]
+            follow_redirects: none
+          register: health_check
+          until: health_check.status is defined and health_check.status not in [-1, 502, 503, 504]
+          retries: "{{ ((health_timeout | int) / 2) | round(0, 'ceil') | int }}"
+          delay: 2
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: Prune unused images
+          containers.podman.podman_prune:
+            image: true
+            image_filters:
+              dangling: false
+          when: not ansible_check_mode
+
+        - name: Query service status
+          ansible.builtin.command:
+            cmd: "systemctl --user status {{ service_name }}.service"
+          register: service_status_output
+          changed_when: false
+          failed_when: false
+
+        - name: Service status
+          ansible.builtin.debug:
+            var: service_status_output.stdout_lines
+
+      always:
+        - name: Clean up local image archive
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ local_image_archive_path }}"
+            state: absent
+
+        - name: Clean up remote image archive
+          ansible.builtin.file:
+            path: "{{ remote_image_archive_path }}"
+            state: absent
