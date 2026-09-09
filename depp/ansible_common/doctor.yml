@@ -16,12 +16,15 @@
         fail_msg: Podman is available but is not running rootless for this user.
         quiet: true
 
-    - name: Check rsync
+    # These two probe whether a tool and the user systemd manager exist at
+    # all. The synchronize and systemd_service modules use them, they cannot
+    # test for them.
+    - name: Check rsync  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: rsync --version
       changed_when: false
 
-    - name: Check user systemd manager
+    - name: Check user systemd manager  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: systemctl --user show-environment
       changed_when: false

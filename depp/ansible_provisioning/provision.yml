@@ -184,7 +184,6 @@
           - "Caddy Port: {{ caddy_host_port }} (from depp.toml)"
           - "Apache config: {{ apache_conf_path }}"
           - "Podman: Installed"
-      run_once: true
 
   handlers:
     - name: Validate Apache configuration before reload

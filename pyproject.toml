@@ -40,6 +40,7 @@ dev = [
     # importorskip on it — declare it so they cannot silently skip.
     "jinja2",
     "ruff",
+    "ansible-lint",
 ]
 
 [project.urls]

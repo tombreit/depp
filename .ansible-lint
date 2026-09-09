@@ -1,0 +1,13 @@
+# Pinned explicitly: without a profile, ansible-lint applies whatever its
+# current default is, so an upgrade could fail CI on rules the code never
+# opted into. The playbooks pass "production" today — the strictest profile.
+profile: production
+
+exclude_paths:
+  - .venv/
+  - examples/
+
+# depp ships playbooks, not a collection or role, so there is no galaxy.yml
+# and no meta/ to check.
+skip_list:
+  - galaxy

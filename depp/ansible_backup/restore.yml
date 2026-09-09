@@ -71,7 +71,8 @@
         daemon_reload: true
         state: started
 
-    - name: Query service status
+    # See deploy.yml: the human-readable status text is the point here.
+    - name: Query service status  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: "systemctl --user status {{ service_name }}.service"
       register: service_status_output

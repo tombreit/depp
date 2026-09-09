@@ -34,6 +34,9 @@
     local_kube_file: "{{ local_repo_path }}/deploy/kube.yaml"
     service_name: "{{ app_name }}"
     systemd_service_filename: "kube-pod.service.j2"
+    # The URL the post-restart health gate polls, named once so the task and
+    # its name cannot drift apart.
+    health_url: "http://127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
 
   tasks:
     ###################################################################
@@ -176,12 +179,12 @@
             state: absent
           when: configmap_yaml is not defined
 
-        - name: "Load image {{ remote_image_archive_path }} from archive"
+        - name: "Load image from archive {{ remote_image_archive_path }}"
           containers.podman.podman_load:
             input: "{{ remote_image_archive_path }}"
           when: ansible_connection != "local"
 
-        - name: "Tag image {{ image_tag }} as latest"
+        - name: "Tag image as latest: {{ image_tag }}"
           containers.podman.podman_tag:
             image: "{{ image_tag }}"
             target_names:
@@ -200,9 +203,9 @@
         # play` returned — not that the app serves. Poll the published caddy
         # port until it answers, so the deploy fails loudly on a crash-looping
         # build instead of reporting a green deploy of a dead app.
-        - name: "Wait for the app to serve on 127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
+        - name: "Wait for the app to serve on {{ health_url }}"
           ansible.builtin.uri:
-            url: "http://127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
+            url: "{{ health_url }}"
             method: GET
             status_code: [200, 301, 302, 401, 403]
             follow_redirects: none
@@ -220,7 +223,10 @@
               dangling: false
           when: not ansible_check_mode
 
-        - name: Query service status
+        # systemd_service reports structured facts; this captures the
+        # familiar `systemctl status` text, journal tail included, which is
+        # what the operator actually wants to read after a deploy.
+        - name: Query service status  # noqa: command-instead-of-module
           ansible.builtin.command:
             cmd: "systemctl --user status {{ service_name }}.service"
           register: service_status_output

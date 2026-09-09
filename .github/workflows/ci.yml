@@ -44,3 +44,6 @@ jobs:
             ansible-playbook --syntax-check "$playbook"
             echo "::endgroup::"
           done
+
+      - name: Lint playbooks
+        run: ansible-lint depp/
