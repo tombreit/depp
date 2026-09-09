@@ -615,6 +615,16 @@ for playbook in depp/ansible_*/*.yml; do
 done
 ```
 
+CI (`.github/workflows/ci.yml`) runs these same checks plus
+`ruff format --check .` and `ansible-lint depp/` on every push and pull
+request — against a single Python version, the newest stable release
+(`python-version: "3.x"`). This is deliberate: depp is an operator tool run
+from one control node rather than a library embedded in other people's
+projects, so a matrix over older interpreters would cost CI time without
+protecting anyone. The `requires-python = ">=3.12"` floor in `pyproject.toml`
+is the `ansible` dependency's floor and stays installable, but it is not
+exercised in CI.
+
 ## Security
 
 depp builds every subprocess invocation as an argument list — there is no

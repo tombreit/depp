@@ -8,17 +8,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
 
+      # Deliberately one version, not a matrix: depp is an operator tool run
+      # from a single control node, not a library imported into other people's
+      # projects, so the newest stable Python is the only version that matters.
+      # "3.x" is setup-python's x-range for the latest stable release, so CI
+      # follows each October release without a repo change — at the cost of
+      # possibly turning red on release day. The `requires-python = ">=3.12"`
+      # floor in pyproject.toml is therefore not exercised here.
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.x"
 
       - name: Install
         run: pip install -e ".[dev]"

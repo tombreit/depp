@@ -20,9 +20,10 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
+    # No per-minor-version classifiers: CI tests only the newest stable
+    # Python, so listing 3.12 and 3.13 would advertise a verification that
+    # does not happen. `requires-python` above is still the install floor.
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Installation/Setup",
     "Topic :: System :: Systems Administration",
 ]
