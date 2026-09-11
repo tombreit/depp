@@ -87,3 +87,40 @@ def test_main_maps_keyboard_interrupt_to_130(monkeypatch, capsys):
         cli.main()
 
     assert "Interrupted" in capsys.readouterr().err
+
+
+def test_load_project_prints_deprecation_once(tmp_path, monkeypatch, capsys):
+    toml_path = tmp_path / "depp.toml"
+    toml_path.write_text(
+        "[app]\nname = 'example'\nproject_root = '.'\n"
+        "[host]\nfqdn = 'example.com'\ncaddy_host_port = 8100\n"
+        "[acme]\ncontact_email = 'ops@example.com'\n"
+    )
+    monkeypatch.setattr(cli, "_PRINTED_DEPRECATIONS", set())
+    args = Namespace(toml_file=toml_path)
+
+    _path, config, _fqdn, _app = cli.load_project(args)
+    cli.load_project(args)
+
+    assert config.host.loopback_port == 8100
+    err = capsys.readouterr().err
+    assert err.count("caddy_host_port is deprecated") == 1
+
+
+def test_resolve_toml_path_errors_when_nothing_found(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli.Path, "cwd", classmethod(lambda _cls: tmp_path))
+
+    with pytest.raises(SystemExit, match=str(cli.EXIT_ERROR)):
+        cli.resolve_toml_path(Namespace(toml_file=None))
+
+    assert "deploy/depp.toml" in capsys.readouterr().err
+
+
+def test_resolve_toml_path_finds_deploy_dir_toml(tmp_path, monkeypatch):
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy" / "depp.toml").write_text("")
+    monkeypatch.setattr(cli.Path, "cwd", classmethod(lambda _cls: tmp_path))
+
+    found = cli.resolve_toml_path(Namespace(toml_file=None))
+
+    assert found == (tmp_path / "deploy" / "depp.toml").resolve()

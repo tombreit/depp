@@ -1,16 +1,18 @@
 # Host provisioning playbook for rootless-podman deployments.
 # This playbook runs with elevated privileges (become: true) to:
 #   - Install and configure podman for rootless operation
-#   - Create a dedicated deployment user matching the host.name
+#   - Create a dedicated deployment user ([host] user, default: the fqdn)
 #   - Create Apache reverse proxy configuration for the host
-#   - Apache reverse proxies to Caddy in container on configured port
+#   - Apache reverse proxies to the pod's published loopback port
 #
 # SSH key setup (handled in pre_tasks):
 #   - Ensures ~/.ssh/id_ed25519.depp exists locally (generated if missing)
 #   - Authorizes that key for the new deploy user on the remote host
 #
 # Variables:
-#   deploy_user_name — derived from inventory_hostname
+#   deploy_user      — inventory host var from [host] user (the CLI always
+#                      sets it; the default() below only covers ad-hoc runs)
+#   deploy_user_name — the resolved account name used by every task
 #   depp_ssh_key     — path to the dedicated depp SSH private key
 #
 
@@ -22,9 +24,11 @@
   vars:
     ansible_python_interpreter: auto_silent
 
-    # Deployment user (same as hostname)
-    deploy_user_name: "{{ inventory_hostname }}"
+    # Deployment user: [host] user, or the fqdn itself. Play vars outrank
+    # inventory host vars, so this must not share a name with the host var.
+    deploy_user_name: "{{ deploy_user | default(inventory_hostname) }}"
     deploy_user_home: "/home/{{ deploy_user_name }}"
+
 
     # Dedicated SSH key for all depp deployments
     depp_ssh_key: "~/.ssh/id_ed25519.depp"
@@ -59,6 +63,60 @@
     ###################################################################
     # User creation
     ###################################################################
+
+    # The vhost depp generated on an earlier run records the deployment user
+    # (Define DEPP_USER). A run that now names a different [host] user is
+    # refused instead of quietly creating a second user next to the one that
+    # owns the running pod and its volumes.
+    - name: Check for a vhost from an earlier provisioning run
+      ansible.builtin.stat:
+        path: "{{ apache_conf_path }}"
+      register: existing_vhost
+
+    - name: Read the recorded deployment user from that vhost
+      ansible.builtin.slurp:
+        src: "{{ apache_conf_path }}"
+      register: existing_vhost_content
+      when: existing_vhost.stat.exists
+
+    - name: Refuse to provision the same host under a different deployment user
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} was provisioned with deployment user
+          '{{ recorded_user }}' but depp.toml now names '{{ deploy_user_name }}'.
+          depp will not create a second user for one host: the running pod,
+          its volumes and its systemd units live in the first user's home.
+          Restore [host] user (or remove it if the recorded name is the fqdn),
+          or migrate by hand — see "Changing the deployment user" in the README.
+      vars:
+        recorded_user: >-
+          {{ existing_vhost_content.content | b64decode
+             | regex_findall('^Define DEPP_USER (\S+)$', multiline=True)
+             | first | default('', true) }}
+      when:
+        - existing_vhost.stat.exists
+        - recorded_user | length > 0
+        - recorded_user != deploy_user_name
+
+    # A vhost written by 0.0.1 has no Define DEPP_USER line, and a host with
+    # no vhost at all may still carry a user: both cases used the fqdn.
+    - name: Look for a legacy deployment user named after the fqdn
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ inventory_hostname }}"
+        fail_key: false
+      when: deploy_user_name != inventory_hostname
+
+    - name: Refuse to add a second user next to a legacy fqdn-named one
+      ansible.builtin.fail:
+        msg: >-
+          user '{{ inventory_hostname }}' already exists on this host, which
+          means it was provisioned by an earlier depp with the default
+          deployment user. Remove [host] user from depp.toml, or migrate the
+          account by hand — see "Changing the deployment user" in the README.
+      when:
+        - deploy_user_name != inventory_hostname
+        - ansible_facts.getent_passwd[inventory_hostname] is not none
 
     - name: Ensure deployment user exists
       ansible.builtin.user:
@@ -95,7 +153,7 @@
         msg:
           - "Deployment user: {{ deploy_user_name }}"
           - "User home: {{ deploy_user_home }}"
-          - "Caddy Port: {{ caddy_host_port }} (from depp.toml)"
+          - "Loopback port: {{ host_loopback_port }} (Apache → 127.0.0.1:{{ host_loopback_port }})"
 
     ###################################################################
     # Apache reverse proxy configuration
@@ -181,7 +239,7 @@
           - "Host preparation complete for {{ inventory_hostname }}"
           - "Deployment user: {{ deploy_user_name }} ({{ deploy_user_home }})"
           - "Lingering enabled for user {{ deploy_user_name }}"
-          - "Caddy Port: {{ caddy_host_port }} (from depp.toml)"
+          - "Loopback port: {{ host_loopback_port }} (Apache → 127.0.0.1:{{ host_loopback_port }})"
           - "Apache config: {{ apache_conf_path }}"
           - "Podman: Installed"
 

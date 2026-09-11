@@ -1,6 +1,7 @@
 """Tests for CLI argument and project parsers."""
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -96,7 +97,7 @@ def test_project_root_relative(tmp_path):
         toml_path,
         {
             "app": {"name": "example", "project_root": ".."},
-            "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+            "host": {"fqdn": "example.com", "loopback_port": 8100},
             "acme": {"contact_email": "ops@example.com"},
         },
     )
@@ -109,20 +110,32 @@ def test_project_root_absolute(tmp_path):
         toml_path,
         {
             "app": {"name": "example", "project_root": str(tmp_path)},
-            "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+            "host": {"fqdn": "example.com", "loopback_port": 8100},
             "acme": {"contact_email": "ops@example.com"},
         },
     )
     assert config.app.project_root == tmp_path.resolve()
 
 
-def test_project_root_missing_key_exits(tmp_path):
+def test_project_root_defaults_from_layout(tmp_path):
+    config = DeppConfig.from_mapping(
+        tmp_path / "depp.toml",
+        {
+            "app": {"name": "example"},
+            "host": {"fqdn": "example.com", "loopback_port": 8100},
+            "acme": {"contact_email": "ops@example.com"},
+        },
+    )
+    assert config.app.project_root == tmp_path.resolve()
+
+
+def test_project_root_rejects_empty_value(tmp_path):
     with pytest.raises(ValueError, match="project_root"):
         DeppConfig.from_mapping(
             tmp_path / "depp.toml",
             {
-                "app": {"name": "example"},
-                "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+                "app": {"name": "example", "project_root": " "},
+                "host": {"fqdn": "example.com", "loopback_port": 8100},
                 "acme": {"contact_email": "ops@example.com"},
             },
         )
@@ -134,7 +147,7 @@ def test_project_root_nonexistent_exits(tmp_path):
             tmp_path / "depp.toml",
             {
                 "app": {"name": "example", "project_root": "does/not/exist"},
-                "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+                "host": {"fqdn": "example.com", "loopback_port": 8100},
                 "acme": {"contact_email": "ops@example.com"},
             },
         )
@@ -213,6 +226,31 @@ def test_subcommand_registers_handler(command_args, handler):
     assert parse_args(command_args).handler is handler
 
 
-def test_missing_required_config_path_is_usage_error():
-    with pytest.raises(SystemExit, match=str(cli.EXIT_USAGE)):
-        parse_args(["deploy"])
+def test_config_path_is_optional():
+    assert parse_args(["deploy"]).toml_file is None
+    assert parse_args(["deploy", "x.toml"]).toml_file == Path("x.toml")
+
+
+def test_restore_path_without_toml():
+    args = parse_args(["restore", "backups/x"])
+    assert args.toml_file is None
+    assert args.restore_path == Path("backups/x")
+
+
+def test_exec_double_dash_without_toml():
+    args = parse_args(["exec", "--", "ls", "-la"])
+    assert args.toml_file is None
+    assert args.exec_command == ["ls", "-la"]
+
+
+def test_exec_double_dash_with_toml_and_options():
+    args = parse_args(["exec", "x.toml", "--host", "--", "systemctl", "--user"])
+    assert args.toml_file == Path("x.toml")
+    assert args.host is True
+    assert args.exec_command == ["systemctl", "--user"]
+
+
+def test_exec_without_double_dash_binds_first_word_to_toml():
+    args = parse_args(["exec", "x.toml", "ls"])
+    assert args.toml_file == Path("x.toml")
+    assert args.exec_command == ["ls"]

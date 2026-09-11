@@ -34,7 +34,7 @@ def write_project(project_root, env_contents):
 
 def make_config(toml_path, data):
     merged = {
-        "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+        "host": {"fqdn": "example.com", "loopback_port": 8100},
         "acme": {"contact_email": "ops@example.com"},
         **data,
     }
@@ -54,7 +54,7 @@ def test_deployment_routes_configmap_through_private_vars(
             "image_name": "example",
             "project_root": str(project_root),
         },
-        "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+        "host": {"fqdn": "example.com", "loopback_port": 8100},
     }
     inventory = {"all": {"hosts": {"example.com": {"health_path": "/"}}}}
     captured = {}
@@ -93,6 +93,9 @@ def test_deployment_routes_configmap_through_private_vars(
 
     assert result == 0
     assert "configmap_yaml" not in captured["extra_vars"]
+    assert captured["extra_vars"]["local_kube_file"] == str(
+        project_root / "deploy" / "kube.yaml"
+    )
     assert "do-not-expose" in captured["private_vars"]["configmap_yaml"]
     assert captured["host_key_policy"] == "strict"
     assert "chmod 600" in capsys.readouterr().err
@@ -138,7 +141,7 @@ def test_invalid_env_fails_before_allocating_archive(tmp_path, monkeypatch, caps
     toml_path = tmp_path / "depp.toml"
     toml_data = {
         "app": {"name": "example", "project_root": str(project_root)},
-        "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+        "host": {"fqdn": "example.com", "loopback_port": 8100},
     }
 
     monkeypatch.setattr(
@@ -189,7 +192,7 @@ def test_missing_containerfile_is_clean_deployment_error(tmp_path, monkeypatch, 
     toml_path = tmp_path / "depp.toml"
     toml_data = {
         "app": {"name": "example", "project_root": str(project_root)},
-        "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+        "host": {"fqdn": "example.com", "loopback_port": 8100},
     }
 
     monkeypatch.setattr(
@@ -224,3 +227,58 @@ def test_missing_containerfile_is_clean_deployment_error(tmp_path, monkeypatch, 
 
     assert result == cli.EXIT_ERROR
     assert "Containerfile not found" in capsys.readouterr().err
+
+
+def test_deploy_dir_layout_resolves_files_next_to_the_toml(
+    tmp_path, monkeypatch, capsys
+):
+    """deploy/depp.toml with kube.yaml and .env beside it, no project_root."""
+    project_root = tmp_path / "project"
+    write_project(project_root, "KEY=value\n")
+    toml_path = project_root / "deploy" / "depp.toml"
+    captured = {}
+
+    monkeypatch.setattr(
+        cli,
+        "load_project",
+        lambda _args: (
+            toml_path,
+            make_config(toml_path, {"app": {"name": "example"}}),
+            "example.com",
+            "example",
+        ),
+    )
+    monkeypatch.setattr(cli, "get_git_info", lambda _root: ("a" * 40, "Test"))
+    monkeypatch.setattr(cli, "check_git_dirty", lambda _root: False)
+    monkeypatch.setattr(
+        cli,
+        "build_inventory_or_exit",
+        lambda *_args: {"all": {"hosts": {"example.com": {}}}},
+    )
+
+    def fake_run_ansible_playbook(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "run_ansible_playbook", fake_run_ansible_playbook)
+
+    result = cli.run_deployment(
+        Namespace(
+            toml_file=toml_path,
+            check=True,
+            yes=True,
+            verbose=False,
+            host_key_policy="strict",
+            connection="ssh",
+            allow_dirty=False,
+        )
+    )
+
+    assert result == 0
+    assert captured["extra_vars"]["local_repo_path"] == str(project_root.resolve())
+    assert captured["extra_vars"]["local_kube_file"] == str(
+        (project_root / "deploy" / "kube.yaml").resolve()
+    )
+    out = capsys.readouterr().out
+    assert "Env file:   deploy/.env" in out
+    assert "Kube:       deploy/kube.yaml" in out

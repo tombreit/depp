@@ -13,7 +13,7 @@ def mapping(project_root="."):
         "app": {"name": "example", "project_root": project_root},
         "host": {
             "fqdn": "app.example.com",
-            "caddy_host_port": 8100,
+            "loopback_port": 8100,
             "server_aliases": ["public.example.com"],
         },
         "acme": {"contact_email": "ops@example.com"},
@@ -118,3 +118,37 @@ def test_load_project_reports_model_error(tmp_path, capsys):
         cli.load_project(Namespace(toml_file=config_path))
 
     assert "Error:" in capsys.readouterr().err
+
+
+def test_user_defaults_to_fqdn(tmp_path):
+    config = DeppConfig.from_mapping(tmp_path / "depp.toml", mapping())
+
+    assert config.host.user == "app.example.com"
+
+
+def test_explicit_user_lifts_fqdn_length_cap(tmp_path):
+    data = mapping()
+    data["host"]["fqdn"] = "a-rather-long-hostname.department.example.org"
+    data["host"]["user"] = "myapp"
+
+    config = DeppConfig.from_mapping(tmp_path / "depp.toml", data)
+
+    assert config.host.user == "myapp"
+    assert config.host.fqdn == "a-rather-long-hostname.department.example.org"
+
+
+def test_long_fqdn_without_user_names_the_way_out(tmp_path):
+    data = mapping()
+    data["host"]["fqdn"] = "a-rather-long-hostname.department.example.org"
+
+    with pytest.raises(ValueError, match=r"\[host\] user"):
+        DeppConfig.from_mapping(tmp_path / "depp.toml", data)
+
+
+@pytest.mark.parametrize("user", ["Surl", "1abc", "a" * 33, "a b", "", 42, "app.x"])
+def test_user_rejects_invalid_linux_usernames(tmp_path, user):
+    data = mapping()
+    data["host"]["user"] = user
+
+    with pytest.raises(ValueError, match="'user' in \\[host\\]"):
+        DeppConfig.from_mapping(tmp_path / "depp.toml", data)

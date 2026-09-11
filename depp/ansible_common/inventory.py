@@ -6,6 +6,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from depp.layout import (
+    ENV_FILENAME,
+    KUBE_MANIFEST_FILENAME,
+    VHOST_SNIPPET_FILENAME,
+    default_project_root,
+    display_path,
+    resolve_deploy_dir,
+)
 from depp.validation import has_control_characters, is_valid_dns_name
 
 DEPP_SSH_KEY_PATH = "~/.ssh/id_ed25519.depp"
@@ -18,8 +26,23 @@ DEFAULT_ACME_CERTIFICATE_AUTHORITY = (
 # the optional [deploy] section of depp.toml.
 DEFAULT_HEALTH_PATH = "/"
 DEFAULT_HEALTH_TIMEOUT = 30
+
+# The port the application (or its Caddy sidecar) binds inside the pod. The
+# generated unit publishes 127.0.0.1:<loopback_port>:<listen_port>.
+DEFAULT_LISTEN_PORT = 80
+CADDY_HOST_PORT_DEPRECATION = (
+    "[host] caddy_host_port is deprecated; rename it to loopback_port "
+    "(same meaning: the 127.0.0.1 port Apache proxies to)."
+)
 CONNECTION_MODES = ("ssh", "local")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# The deployment user on the host defaults to the fqdn itself (one app, one
+# user, one vhost). useradd caps names at 32 characters, so the fqdn inherits
+# that cap unless [host] user names the account explicitly.
+LINUX_USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+MAX_FQDN_LENGTH_AS_USER = 32
+MAX_FQDN_LENGTH = 253
 
 
 @dataclass(frozen=True)
@@ -28,12 +51,15 @@ class AppConfig:
     project_root: Path
     image_name: str
     containerfile: str
+    listen_port: int
 
 
 @dataclass(frozen=True)
 class HostConfig:
     fqdn: str
-    caddy_host_port: int
+    # The Linux account depp deploys as; the fqdn unless [host] user says so.
+    user: str
+    loopback_port: int
     server_aliases: tuple[str, ...]
 
 
@@ -53,10 +79,15 @@ class DeployConfig:
 @dataclass(frozen=True)
 class DeppConfig:
     source_path: Path
+    # Where kube.yaml, .env and vhost.conf live; see depp.layout.
+    deploy_dir: Path
     app: AppConfig
     host: HostConfig
     acme: AcmeConfig
     deploy: DeployConfig
+    # Human-readable notices about accepted-but-deprecated keys, printed once
+    # by the CLI so a legacy depp.toml keeps working while saying what to rename.
+    deprecations: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, source_path: Path, data: dict[str, Any]) -> "DeppConfig":
@@ -70,12 +101,12 @@ class DeppConfig:
         deploy_data = _table(data, "deploy", required=False)
         _reject_unknown(
             app_data,
-            {"name", "project_root", "image_name", "containerfile"},
+            {"name", "project_root", "image_name", "containerfile", "listen_port"},
             "[app]",
         )
         _reject_unknown(
             host_data,
-            {"fqdn", "caddy_host_port", "server_aliases"},
+            {"fqdn", "user", "loopback_port", "caddy_host_port", "server_aliases"},
             "[host]",
         )
         _reject_unknown(
@@ -85,34 +116,51 @@ class DeppConfig:
         )
         _reject_unknown(deploy_data, {"health_path", "health_timeout"}, "[deploy]")
 
-        fqdn = parse_host_config(host_data)
+        user = parse_host_user(host_data)
+        fqdn = parse_host_fqdn(
+            host_data,
+            max_length=MAX_FQDN_LENGTH if user else MAX_FQDN_LENGTH_AS_USER,
+        )
         app_values = parse_app_config(app_data)
         project_root_value = app_data.get("project_root")
-        if not isinstance(project_root_value, str) or not project_root_value.strip():
-            raise ValueError("'project_root' is required in [app] section")
-        project_root = Path(project_root_value)
-        if not project_root.is_absolute():
-            project_root = source_path.parent / project_root
-        project_root = project_root.resolve()
+        if project_root_value is None:
+            project_root = default_project_root(source_path)
+        else:
+            if (
+                not isinstance(project_root_value, str)
+                or not project_root_value.strip()
+            ):
+                raise ValueError("'project_root' in [app] must be a non-empty path")
+            project_root = Path(project_root_value)
+            if not project_root.is_absolute():
+                project_root = source_path.parent / project_root
+            project_root = project_root.resolve()
         if not project_root.is_dir():
             raise ValueError(f"project_root does not exist: {project_root}")
+        deploy_dir = resolve_deploy_dir(source_path, project_root)
 
         image_name = app_values.get("image_name", app_values["name"])
         containerfile = app_values.get("containerfile", "Containerfile")
         acme_values = parse_acme_config(acme_data)
         deploy_values = parse_deploy_config(deploy_data)
+        deprecations = []
+        if "caddy_host_port" in host_data:
+            deprecations.append(CADDY_HOST_PORT_DEPRECATION)
 
         return cls(
             source_path=source_path,
+            deploy_dir=deploy_dir,
             app=AppConfig(
                 name=app_values["name"],
                 project_root=project_root,
                 image_name=image_name,
                 containerfile=containerfile,
+                listen_port=parse_listen_port(app_data),
             ),
             host=HostConfig(
                 fqdn=fqdn,
-                caddy_host_port=parse_caddy_host_port(host_data),
+                user=user or fqdn,
+                loopback_port=parse_loopback_port(host_data),
                 server_aliases=tuple(parse_server_aliases(host_data)),
             ),
             acme=AcmeConfig(
@@ -121,7 +169,26 @@ class DeppConfig:
                 external_account_binding=acme_values["acme_external_account_binding"],
             ),
             deploy=DeployConfig(**deploy_values),
+            deprecations=tuple(deprecations),
         )
+
+    @property
+    def kube_manifest(self) -> Path:
+        return self.deploy_dir / KUBE_MANIFEST_FILENAME
+
+    @property
+    def env_file(self) -> Path:
+        """Optional; its presence decides whether depp renders a ConfigMap."""
+        return self.deploy_dir / ENV_FILENAME
+
+    @property
+    def vhost_snippet(self) -> Path:
+        """Optional Apache directives installed by ``depp provision``."""
+        return self.deploy_dir / VHOST_SNIPPET_FILENAME
+
+    def display(self, path: Path) -> str:
+        """A path as the operator knows it: relative to the project when inside."""
+        return display_path(path, self.app.project_root)
 
     def with_acme_overrides(self, overrides: dict[str, Any]) -> "DeppConfig":
         _reject_unknown(
@@ -163,17 +230,37 @@ def _reject_unknown(data: dict[str, Any], allowed: set[str], location: str) -> N
         raise ValueError(f"unknown key(s) in {location}: {', '.join(unknown)}")
 
 
-def parse_host_config(host_cfg: dict[str, Any]) -> str:
-    """Parse and validate host configuration from TOML.
+def parse_host_fqdn(host_cfg: dict[str, Any], *, max_length: int) -> str:
+    """Parse and validate [host].fqdn, the inventory hostname.
 
-    Returns:
-        The FQDN used as inventory hostname.
+    ``max_length`` is 32 while the fqdn doubles as the Linux username and
+    253 once [host] user names the account explicitly.
     """
     fqdn = host_cfg.get("fqdn", "")
     if not isinstance(fqdn, str) or not fqdn:
         raise ValueError("'fqdn' is required in [host] section of depp.toml.")
-    _validate_dns_name(fqdn, "'fqdn' in [host]", max_length=32)
+    if not is_valid_dns_name(fqdn, max_length=max_length, allow_dots=True):
+        hint = ""
+        if max_length == MAX_FQDN_LENGTH_AS_USER and len(fqdn) > max_length:
+            hint = (
+                f" of at most {max_length} characters, because it doubles as the "
+                "deployment username; set [host] user to lift that limit"
+            )
+        raise ValueError(f"'fqdn' in [host] must be a lowercase DNS name{hint}")
     return fqdn
+
+
+def parse_host_user(host_cfg: dict[str, Any]) -> str | None:
+    """Parse the optional [host].user, the Linux account depp deploys as."""
+    if "user" not in host_cfg:
+        return None
+    user = host_cfg["user"]
+    if not isinstance(user, str) or not LINUX_USERNAME.fullmatch(user):
+        raise ValueError(
+            "'user' in [host] must be a Linux username matching "
+            f"{LINUX_USERNAME.pattern} (got {user!r})."
+        )
+    return user
 
 
 def parse_app_config(app_cfg: dict[str, Any]) -> dict[str, str]:
@@ -258,7 +345,7 @@ def parse_deploy_config(deploy_cfg: dict[str, Any]) -> dict[str, Any]:
     back to safe defaults, so an absent [deploy] section is fine.
 
     Optional:
-        health_path     — URL path polled on the published caddy port
+        health_path     — URL path polled on the host loopback port
                           (default ``/``).
         health_timeout  — seconds to keep polling before the deploy is
                           declared failed (default ``30``).
@@ -283,23 +370,47 @@ def parse_deploy_config(deploy_cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_caddy_host_port(host_cfg: dict[str, Any]) -> int:
-    """Parse and validate [host].caddy_host_port from TOML."""
-    caddy_host_port = host_cfg.get("caddy_host_port")
-    if caddy_host_port is None:
-        raise ValueError(
-            "'caddy_host_port' is required in [host] section of depp.toml."
-        )
+def _validate_port(value: Any, field: str) -> int:
     if (
-        not isinstance(caddy_host_port, int)
-        or isinstance(caddy_host_port, bool)
-        or not (1 <= caddy_host_port <= 65535)
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not (1 <= value <= 65535)
     ):
         raise ValueError(
-            "'caddy_host_port' in [host] section must be an integer port number "
-            f"between 1 and 65535 (got {caddy_host_port!r})."
+            f"{field} must be an integer port number between 1 and 65535 "
+            f"(got {value!r})."
         )
-    return caddy_host_port
+    return value
+
+
+def parse_loopback_port(host_cfg: dict[str, Any]) -> int:
+    """Parse [host].loopback_port: the 127.0.0.1 port Apache proxies to.
+
+    ``caddy_host_port`` is the 0.0.1 name for the same value and is still
+    accepted, so a depp.toml written for an already-deployed app keeps
+    working; ``DeppConfig.deprecations`` carries the rename notice.
+    """
+    has_new = "loopback_port" in host_cfg
+    has_old = "caddy_host_port" in host_cfg
+    if has_new and has_old:
+        raise ValueError(
+            "'loopback_port' and its deprecated alias 'caddy_host_port' are both "
+            "set in [host]; keep only loopback_port."
+        )
+    if has_new:
+        return _validate_port(host_cfg["loopback_port"], "'loopback_port' in [host]")
+    if has_old:
+        return _validate_port(
+            host_cfg["caddy_host_port"], "'caddy_host_port' in [host]"
+        )
+    raise ValueError("'loopback_port' is required in [host] section of depp.toml.")
+
+
+def parse_listen_port(app_cfg: dict[str, Any]) -> int:
+    """Parse the optional [app].listen_port: the port bound inside the pod."""
+    if "listen_port" not in app_cfg:
+        return DEFAULT_LISTEN_PORT
+    return _validate_port(app_cfg["listen_port"], "'listen_port' in [app]")
 
 
 def parse_server_aliases(host_cfg: dict[str, Any]) -> list[str]:
@@ -355,7 +466,7 @@ def build_base_inventory(hostname: str, host_vars: dict[str, Any]) -> dict[str, 
 
 def _apply_connection(
     host_vars: dict[str, Any],
-    hostname: str,
+    deploy_user: str,
     connection: str,
     *,
     as_deploy_user: bool,
@@ -364,7 +475,7 @@ def _apply_connection(
         host_vars["ansible_connection"] = "local"
     elif connection == "ssh":
         if as_deploy_user:
-            host_vars["ansible_user"] = hostname
+            host_vars["ansible_user"] = deploy_user
             host_vars["ansible_ssh_private_key_file"] = DEPP_SSH_KEY_PATH
     else:
         raise ValueError(f"unsupported connection mode {connection!r}")
@@ -378,11 +489,12 @@ def build_inventory(config: DeppConfig, connection: str = "ssh") -> dict[str, An
         "app_name": config.app.name,
         "image_name": config.app.image_name,
         "containerfile": config.app.containerfile,
-        "caddy_host_port": config.host.caddy_host_port,
+        "app_listen_port": config.app.listen_port,
+        "host_loopback_port": config.host.loopback_port,
         "health_path": config.deploy.health_path,
         "health_timeout": config.deploy.health_timeout,
     }
-    _apply_connection(host_vars, hostname, connection, as_deploy_user=True)
+    _apply_connection(host_vars, config.host.user, connection, as_deploy_user=True)
 
     return build_base_inventory(hostname, host_vars)
 
@@ -394,13 +506,17 @@ def build_provisioning_inventory(
     hostname = config.host.fqdn
 
     host_vars: dict[str, Any] = {
-        "caddy_host_port": config.host.caddy_host_port,
+        # Not ``deploy_user_name``: provision.yml declares that as a play var,
+        # which outranks inventory, so it reads this one with a default.
+        "deploy_user": config.host.user,
+        "app_name": config.app.name,
+        "host_loopback_port": config.host.loopback_port,
         "server_aliases": list(config.host.server_aliases),
         "acme_contact_email": config.acme.contact_email,
         "acme_certificate_authority": config.acme.certificate_authority,
         "acme_external_account_binding": config.acme.external_account_binding,
     }
-    _apply_connection(host_vars, hostname, connection, as_deploy_user=False)
+    _apply_connection(host_vars, config.host.user, connection, as_deploy_user=False)
 
     return build_base_inventory(hostname, host_vars)
 
@@ -422,7 +538,7 @@ def _build_backup_restore_host_vars(
         "pod_name": pod_name or config.app.name,
         "backup_dirs": volumes,
     }
-    _apply_connection(host_vars, hostname, connection, as_deploy_user=True)
+    _apply_connection(host_vars, config.host.user, connection, as_deploy_user=True)
     return hostname, host_vars
 
 

@@ -6,10 +6,13 @@
 # container image directly (no registry required).
 #
 # Variables injected via the CLI wrapper:
-#   app_version, local_repo_path, local_archive_dir — passed as extra vars (-e)
+#   app_version, local_repo_path, local_archive_dir, local_kube_file — passed
+#   as extra vars (-e); the kube.yaml location is the CLI's decision (see
+#   depp/layout.py), not re-derived here
 #   pvc_volumes — passed as an extra var when applicable
 #   configmap_yaml — passed privately through the temporary inventory
-#   app_name, image_name, caddy_host_port — embedded in the inventory
+#   app_name, image_name, app_listen_port, host_loopback_port — embedded in
+#   the inventory
 
 - name: Deploy Application with Rootless Podman
   hosts: all
@@ -31,12 +34,11 @@
     remote_image_archive_path: "{{ remote_image_archive_dir }}/{{ image_archive_filename }}"
     systemd_user_dir: "{{ ansible_facts['env']['HOME'] }}/.config/systemd/user"
     remote_config_dir: "{{ ansible_facts['env']['HOME'] }}/config/{{ app_name }}"
-    local_kube_file: "{{ local_repo_path }}/deploy/kube.yaml"
     service_name: "{{ app_name }}"
     systemd_service_filename: "kube-pod.service.j2"
     # The URL the post-restart health gate polls, named once so the task and
     # its name cannot drift apart.
-    health_url: "http://127.0.0.1:{{ caddy_host_port }}{{ health_path }}"
+    health_url: "http://127.0.0.1:{{ host_loopback_port }}{{ health_path }}"
 
   tasks:
     ###################################################################
@@ -200,7 +202,7 @@
           when: not ansible_check_mode
 
         # Health gate: the systemd unit going "active" only means `podman kube
-        # play` returned — not that the app serves. Poll the published caddy
+        # play` returned — not that the app serves. Poll the host loopback
         # port until it answers, so the deploy fails loudly on a crash-looping
         # build instead of reporting a green deploy of a dead app.
         - name: "Wait for the app to serve on {{ health_url }}"

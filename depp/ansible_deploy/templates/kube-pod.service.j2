@@ -12,7 +12,7 @@ RemainAfterExit=yes
 # ignores the no-op exit so it never blocks startup.
 ExecStartPre=-/usr/bin/podman kube down %h/config/{{ app_name }}/kube.yaml
 ExecStart=/usr/bin/podman kube play \
-    --publish 127.0.0.1:{{ caddy_host_port }}:80 \
+    --publish 127.0.0.1:{{ host_loopback_port }}:{{ app_listen_port }} \
 {% if configmap_yaml is defined %}    --configmap %h/config/{{ app_name }}/configmap.yaml \
 {% endif %}    %h/config/{{ app_name }}/kube.yaml
 ExecStop=/usr/bin/podman kube down %h/config/{{ app_name }}/kube.yaml

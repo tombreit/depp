@@ -14,7 +14,9 @@ from tests.template_render import (
 
 BASE_VARS = {
     "inventory_hostname": "app.example.com",
-    "caddy_host_port": 8100,
+    "app_name": "example",
+    "deploy_user_name": "app.example.com",
+    "host_loopback_port": 8100,
     "acme_certificate_authority": "https://acme.example/directory",
     "acme_contact_email": "ops@example.com",
     "acme_external_account_binding": None,
@@ -97,8 +99,8 @@ def test_host_is_preserved_to_the_backend():
     assert directives(render(), "ProxyPreserveHost") == ["ProxyPreserveHost On"]
 
 
-def test_caddy_port_is_templated_into_the_proxy():
-    conf = render(caddy_host_port=9123)
+def test_loopback_port_is_templated_into_the_proxy():
+    conf = render(host_loopback_port=9123)
     assert 'ProxyPass / "http://127.0.0.1:9123/"' in directives(conf, "ProxyPass")
 
 
@@ -108,3 +110,41 @@ def test_external_account_binding_is_optional():
     assert directives(conf, "MDExternalAccountBinding") == [
         "MDExternalAccountBinding kid hmac"
     ]
+
+
+def vhost_443(conf):
+    """The text of the :443 vhost only."""
+    start = conf.index("<VirtualHost *:443>")
+    return conf[start : conf.index("</VirtualHost>", start)]
+
+
+def test_maintenance_exclusion_precedes_catch_all_proxypass():
+    body = vhost_443(render())
+    assert body.index("ProxyPass /__depp_maintenance.html !") < body.index(
+        'ProxyPass / "'
+    )
+
+
+def test_defines_expose_backend_and_identity():
+    conf = render()
+    assert directives(conf, "Define ") == [
+        "Define DEPP_FQDN app.example.com",
+        "Define DEPP_APP example",
+        "Define DEPP_USER app.example.com",
+        "Define DEPP_LOOPBACK_PORT 8100",
+        "Define DEPP_BACKEND http://127.0.0.1:8100",
+    ]
+    assert sorted(directives(conf, "UnDefine ")) == sorted(
+        f"UnDefine {name}"
+        for name in (
+            "DEPP_FQDN",
+            "DEPP_APP",
+            "DEPP_USER",
+            "DEPP_LOOPBACK_PORT",
+            "DEPP_BACKEND",
+        )
+    )
+    # Defined before any vhost and undefined after the last one, so they do
+    # not leak into hand-written vhosts parsed later.
+    assert conf.index("Define DEPP_FQDN") < conf.index("<MDomainSet")
+    assert conf.index("UnDefine DEPP_FQDN") > conf.rindex("</VirtualHost>")

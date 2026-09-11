@@ -13,7 +13,7 @@ def make_config(tmp_path):
         tmp_path / "depp.toml",
         {
             "app": {"name": "example", "project_root": "."},
-            "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+            "host": {"fqdn": "example.com", "loopback_port": 8100},
             "acme": {"contact_email": "ops@example.com"},
         },
     )

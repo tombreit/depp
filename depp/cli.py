@@ -3,17 +3,19 @@
 depp — DEployment and Provisioning Python wrapper
 
 Usage:
-    depp provision DEPP_TOML          # provision host
-    depp provision DEPP_TOML --check  # dry-run (no changes)
-    depp deploy DEPP_TOML             # deploy
-    depp deploy DEPP_TOML --check     # dry-run (no changes on remote)
-    depp backup DEPP_TOML             # pull volume contents to local backups/
-    depp restore DEPP_TOML PATH       # push a local backup back to the host
-    depp reset DEPP_TOML              # delete volume contents (backup taken first)
-    depp doctor DEPP_TOML             # validate project and target readiness
-    depp exec DEPP_TOML -- CMD        # run command in container (TTY if we have one)
-    depp exec DEPP_TOML               # interactive shell in container
-    depp exec DEPP_TOML --host        # interactive shell on host
+    depp provision [DEPP_TOML]          # provision host
+    depp provision [DEPP_TOML] --check  # dry-run (no changes)
+    depp deploy [DEPP_TOML]             # deploy
+    depp deploy [DEPP_TOML] --check     # dry-run (no changes on remote)
+    depp backup [DEPP_TOML]             # pull volume contents to local backups/
+    depp restore [DEPP_TOML] PATH       # push a local backup back to the host
+    depp reset [DEPP_TOML]              # delete volume contents (backup taken first)
+    depp doctor [DEPP_TOML]             # validate project and target readiness
+    depp exec [DEPP_TOML] -- CMD        # run command in container (TTY if we have one)
+    depp exec [DEPP_TOML]               # interactive shell in container
+    depp exec [DEPP_TOML] --host        # interactive shell on host
+
+DEPP_TOML defaults to ./deploy/depp.toml, then ./depp.toml.
 """
 
 import argparse
@@ -42,14 +44,8 @@ from depp.ansible_common.runner import run_ansible_playbook
 from depp.ansible_common.ssh import HOST_KEY_POLICIES, host_key_options
 from depp.configmap import render_configmap
 from depp.doctor import DoctorCheck, control_node_checks
+from depp.layout import DEPLOY_DIR_NAME, TOML_FILENAME, find_default_toml
 from depp.manifest import ManifestError, parse_kube_manifest, validate_deploy_manifest
-
-# depp's opinionated project layout: every project has a fixed `deploy/`
-# directory holding the Pod manifest and (optionally) the secrets env file.
-# Not configurable — deterministic beats flexible here.
-DEPLOY_DIR = "deploy"
-KUBE_MANIFEST_FILENAME = "kube.yaml"
-ENV_FILENAME = ".env"
 
 EXIT_SUCCESS = 0
 EXIT_ERROR = 1
@@ -110,18 +106,19 @@ def build_inventory_or_exit(builder, *args):
         sys.exit(EXIT_ERROR)
 
 
-def resolve_kube_manifest(project_root: Path) -> Path:
-    """Resolve the Pod manifest path: always ``deploy/kube.yaml``."""
-    return project_root / DEPLOY_DIR / KUBE_MANIFEST_FILENAME
-
-
-def resolve_env_file(project_root: Path) -> Path:
-    """Resolve the deployment env file path: always ``deploy/.env``.
-
-    The file is optional — its mere presence decides whether depp renders a
-    ConfigMap, so projects without secrets simply have no ``deploy/.env``.
-    """
-    return project_root / DEPLOY_DIR / ENV_FILENAME
+def resolve_toml_path(args: argparse.Namespace) -> Path:
+    """The depp.toml to use: the given path, else the first default found."""
+    if args.toml_file is not None:
+        return args.toml_file.resolve()
+    found = find_default_toml(Path.cwd())
+    if found is None:
+        print(
+            "Error: no configuration file given and none found at "
+            f"{DEPLOY_DIR_NAME}/{TOML_FILENAME} or {TOML_FILENAME}",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_ERROR)
+    return found.resolve()
 
 
 def operator_config_path() -> Path:
@@ -169,19 +166,29 @@ def load_operator_acme(path: Path | None) -> dict:
     return acme
 
 
+# Deprecation notices already printed in this process. ``restore`` and
+# ``reset`` load the project twice (once for the pre-flight backup), and the
+# operator should read each notice once, not once per playbook.
+_PRINTED_DEPRECATIONS: set[str] = set()
+
+
 def load_project(args: argparse.Namespace) -> tuple[Path, DeppConfig, str, str]:
     """Resolve and parse the project depp.toml every subcommand starts from.
 
     Returns ``(toml_path, config, fqdn, app_name)``; exits with a validation
     error when the unified configuration model cannot be constructed.
     """
-    toml_path = args.toml_file.resolve()
+    toml_path = resolve_toml_path(args)
     toml_data = load_toml_config(toml_path)
     try:
         config = DeppConfig.from_mapping(toml_path, toml_data)
     except ValueError as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
+    for notice in config.deprecations:
+        if notice not in _PRINTED_DEPRECATIONS:
+            _PRINTED_DEPRECATIONS.add(notice)
+            print(f"Warning: {notice}", file=sys.stderr)
     return toml_path, config, config.host.fqdn, config.app.name
 
 
@@ -200,8 +207,9 @@ def ssh_connection_string(
     fqdn: str,
     host_key_policy: str = "strict",
     connection: str = "ssh",
+    user: str | None = None,
 ) -> str:
-    """The ssh invocation Ansible derives: depp key, deploy user (= fqdn), host."""
+    """The ssh invocation Ansible derives: depp key, deploy user, host."""
     if connection == "local":
         return "local (current user)"
     return shlex.join(
@@ -210,7 +218,7 @@ def ssh_connection_string(
             "-i",
             DEPP_SSH_KEY_PATH,
             *host_key_options(host_key_policy),
-            f"{fqdn}@{fqdn}",
+            f"{user or fqdn}@{fqdn}",
         ]
     )
 
@@ -262,17 +270,21 @@ def run_provisioning(args: argparse.Namespace) -> int:
     )
     host_vars = inventory["all"]["hosts"][hostname]
 
-    connection = ssh_connection_string(hostname, args.host_key_policy, args.connection)
+    deploy_user = config.host.user
+    connection = ssh_connection_string(
+        hostname, args.host_key_policy, args.connection, deploy_user
+    )
     lines = [
         f"Configuration file: {toml_path}",
-        f"Deployment user: {hostname}",
+        f"Deployment user: {deploy_user}",
         f"Connection: {connection}",
         "",
         "What will be done:",
-        f"  ✓ Create deployment user {hostname}",
-        f"  ✓ Create SSH key for user {hostname} at {DEPP_SSH_KEY_PATH}",
+        f"  ✓ Create deployment user {deploy_user}",
+        f"  ✓ Create SSH key for user {deploy_user} at {DEPP_SSH_KEY_PATH}",
         "  ✓ Install podman for rootless containers",
-        f"  ✓ Configure Apache reverse proxy using port {host_vars['caddy_host_port']}",
+        "  ✓ Configure Apache reverse proxy → "
+        f"127.0.0.1:{host_vars['host_loopback_port']}",
     ]
     if host_vars.get("acme_external_account_binding"):
         lines.append("  ✓ Configure ACME External Account Binding")
@@ -410,13 +422,14 @@ def resolve_containerfile(project_root: Path, config: DeppConfig) -> Path:
 def validate_project_inputs(config: DeppConfig):
     """Validate deployment files once for deploy and doctor."""
     project_root = config.app.project_root
-    kube_file = resolve_kube_manifest(project_root)
-    env_path = resolve_env_file(project_root)
+    kube_file = config.kube_manifest
+    env_path = config.env_file
     containerfile = resolve_containerfile(project_root, config)
     manifest = validate_deploy_manifest(
         kube_file,
         image_name=config.app.image_name,
         has_env_file=env_path.exists(),
+        env_label=config.display(env_path),
     )
     configmap_yaml = None
     if env_path.exists():
@@ -447,7 +460,7 @@ def run_deployment(args: argparse.Namespace) -> int:
     try:
         (
             containerfile,
-            _kube_file,
+            kube_file,
             env_path,
             manifest,
             configmap_yaml,
@@ -473,7 +486,9 @@ def run_deployment(args: argparse.Namespace) -> int:
         if len(app_message) > max_message_length
         else app_message
     )
-    connection = ssh_connection_string(fqdn, args.host_key_policy, args.connection)
+    connection = ssh_connection_string(
+        fqdn, args.host_key_policy, args.connection, config.host.user
+    )
     lines = [f"App:        {app_name}"]
     if image_name and image_name != app_name:
         lines.append(f"Image:      {image_name}")
@@ -484,8 +499,8 @@ def run_deployment(args: argparse.Namespace) -> int:
         f"Build file: {containerfile.relative_to(project_root)}",
         f"Target:     {fqdn}",
         f"Connection: {connection}",
-        f"Env file:   {'deploy/.env' if env_path.exists() else 'none'}",
-        "Kube:       deploy/kube.yaml (systemd unit generated by depp)",
+        f"Env file:   {config.display(env_path) if env_path.exists() else 'none'}",
+        f"Kube:       {config.display(kube_file)} (systemd unit generated by depp)",
     ]
     print_summary(f"Deployment Summary for {fqdn}", lines)
 
@@ -509,6 +524,7 @@ def run_deployment(args: argparse.Namespace) -> int:
     extra_vars = {
         "app_version": app_version,
         "local_repo_path": str(project_root),
+        "local_kube_file": str(kube_file),
         "local_archive_dir": local_archive_dir,
     }
 
@@ -571,11 +587,8 @@ def backup_volumes(toml_path: Path, config: DeppConfig) -> tuple[str, list[str]]
     the pod declares. Ephemeral volumes (emptyDir, configMap) are not PVCs
     and are therefore naturally excluded. Reuses ``parse_kube_manifest``.
     """
-    project_root = config.app.project_root
     try:
-        pod_name, _containers, pvcs = parse_kube_manifest(
-            resolve_kube_manifest(project_root)
-        )
+        pod_name, _containers, pvcs = parse_kube_manifest(config.kube_manifest)
     except ManifestError as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
@@ -589,8 +602,8 @@ def pvc_volumes_or_exit(
     pod_name, volumes = backup_volumes(toml_path, config)
     if not volumes:
         print(
-            f"Error: No persistentVolumeClaims declared in kube.yaml — "
-            f"nothing to {verb}.",
+            "Error: No persistentVolumeClaims declared in "
+            f"{config.display(config.kube_manifest)} — nothing to {verb}.",
             file=sys.stderr,
         )
         sys.exit(EXIT_ERROR)
@@ -605,8 +618,8 @@ def run_backup(args: argparse.Namespace) -> int:
     pod_name, backup_dirs = backup_volumes(toml_path, config)
     if not backup_dirs:
         print(
-            "Warning: No persistentVolumeClaims declared in kube.yaml — "
-            "nothing to back up.",
+            "Warning: No persistentVolumeClaims declared in "
+            f"{config.display(config.kube_manifest)} — nothing to back up.",
             file=sys.stderr,
         )
         return 0
@@ -638,7 +651,9 @@ def run_backup(args: argparse.Namespace) -> int:
         args.connection,
     )
 
-    connection = ssh_connection_string(fqdn, args.host_key_policy, args.connection)
+    connection = ssh_connection_string(
+        fqdn, args.host_key_policy, args.connection, config.host.user
+    )
     print_summary(
         f"Backup Summary for {fqdn}",
         [
@@ -708,7 +723,9 @@ def run_restore(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    connection = ssh_connection_string(fqdn, args.host_key_policy, args.connection)
+    connection = ssh_connection_string(
+        fqdn, args.host_key_policy, args.connection, config.host.user
+    )
     lines = [
         f"Configuration file: {toml_path}",
         f"App:                {app_name}",
@@ -778,7 +795,9 @@ def run_reset(args: argparse.Namespace) -> int:
 
     pod_name, backup_dirs = pvc_volumes_or_exit(toml_path, config, "reset")
 
-    connection = ssh_connection_string(fqdn, args.host_key_policy, args.connection)
+    connection = ssh_connection_string(
+        fqdn, args.host_key_policy, args.connection, config.host.user
+    )
     print_summary(
         f"Reset Summary for {fqdn}",
         [
@@ -859,14 +878,11 @@ def resolve_exec_container(
     """Resolve the full podman container name for ``depp exec``.
 
     ``podman kube play`` names containers ``{pod_name}-{container_name}``;
-    both parts come from a validated deploy/kube.yaml. Invalid manifests fail
-    instead of falling back to a guessed container name.
+    both parts come from a validated kube.yaml. Invalid manifests fail instead
+    of falling back to a guessed container name.
     """
-    project_root = config.app.project_root
     try:
-        pod_name, containers, _pvcs = parse_kube_manifest(
-            resolve_kube_manifest(project_root)
-        )
+        pod_name, containers, _pvcs = parse_kube_manifest(config.kube_manifest)
     except ManifestError as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
@@ -874,7 +890,8 @@ def resolve_exec_container(
     if requested:
         if requested not in containers:
             print(
-                f"Error: container '{requested}' not found in deploy/kube.yaml. "
+                f"Error: container '{requested}' not found in "
+                f"{config.display(config.kube_manifest)}. "
                 f"Available containers: {', '.join(containers)}",
                 file=sys.stderr,
             )
@@ -913,6 +930,7 @@ def run_exec_command(args: argparse.Namespace) -> int:
         host_only=args.host,
         host_key_policy=args.host_key_policy,
         connection=args.connection,
+        user=config.host.user,
     )
 
 
@@ -933,15 +951,18 @@ def run_doctor(args: argparse.Namespace) -> int:
 
     if env_path.exists():
         secure_env = not bool(env_path.stat().st_mode & 0o077)
+        env_label = config.display(env_path)
         checks.append(
             DoctorCheck(
-                name="deploy/.env permissions",
+                name=f"{env_label} permissions",
                 ok=secure_env,
-                detail="owner-only" if secure_env else "run chmod 600 deploy/.env",
+                detail="owner-only" if secure_env else f"run chmod 600 {env_label}",
             )
         )
 
-    connection = ssh_connection_string(fqdn, args.host_key_policy, args.connection)
+    connection = ssh_connection_string(
+        fqdn, args.host_key_policy, args.connection, config.host.user
+    )
     lines = [
         f"Configuration: {toml_path}",
         f"App:           {app_name}",
@@ -952,6 +973,7 @@ def run_doctor(args: argparse.Namespace) -> int:
         f"Env file:      {env_path if env_path.exists() else 'none'}",
         f"Git:           {commit_hash} ({'dirty' if git_dirty else 'clean'})",
         f"Target:        {fqdn}",
+        f"Deploy user:   {config.host.user}",
         f"Connection:    {connection}",
         "",
         "Control node:",
@@ -1008,16 +1030,25 @@ def _add_connection_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_toml_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "toml_file",
+        type=Path,
+        nargs="?",
+        default=None,
+        help=(
+            "Path to the depp.toml configuration file "
+            f"(default: ./{DEPLOY_DIR_NAME}/{TOML_FILENAME}, then ./{TOML_FILENAME})"
+        ),
+        metavar="DEPLOY_TOML",
+    )
+
+
 def _add_common_args(
     parser: argparse.ArgumentParser, *, check: bool = False, yes: bool = False
 ) -> None:
     """Add the arguments shared by the subcommands."""
-    parser.add_argument(
-        "toml_file",
-        type=Path,
-        help="Path to the depp.toml configuration file",
-        metavar="DEPLOY_TOML",
-    )
+    _add_toml_arg(parser)
     if check:
         parser.add_argument(
             "--check",
@@ -1094,8 +1125,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Back up named podman volumes from a remote host",
         description=(
             "Reads a depp.toml file and fetches the contents of every volume the "
-            "pod declares as a persistentVolumeClaim in deploy/kube.yaml into a "
-            "local backups/<fqdn>/<timestamp>/ directory."
+            "pod declares as a persistentVolumeClaim in kube.yaml into a "
+            "backups/<fqdn>/<timestamp>/ directory next to the depp.toml."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
@@ -1122,7 +1153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help=(
             "Path to the backup directory to restore from "
-            "(e.g. backups/host/2026-03-14T103045Z/)"
+            "(e.g. deploy/backups/host/2026-03-14T103045Z/)"
         ),
         metavar="RESTORE_PATH",
     )
@@ -1148,7 +1179,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "deploy",
         help="Deploy the application to a remote host via rootless podman",
         description=(
-            "Reads a depp.toml file, copies the Pod manifest (deploy/kube.yaml) "
+            "Reads a depp.toml file, copies the Pod manifest (kube.yaml) "
             "and config, and runs the bundled Ansible playbook."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1195,12 +1226,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
-    exec_parser.add_argument(
-        "toml_file",
-        type=Path,
-        help="Path to the depp.toml configuration file",
-        metavar="DEPLOY_TOML",
-    )
+    _add_toml_arg(exec_parser)
     exec_parser.add_argument(
         "--host",
         action="store_true",
@@ -1209,7 +1235,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     exec_parser.add_argument(
         "--container",
         metavar="NAME",
-        help="Container (as named in deploy/kube.yaml) to exec into. "
+        help="Container (as named in kube.yaml) to exec into. "
         "Default: the pod's only container, or the one named 'app'.",
     )
     _add_connection_arg(exec_parser)
@@ -1236,11 +1262,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     exec_parser.add_argument(
         "exec_command",
         nargs="*",
-        help="Command to execute (use -- before the command, e.g. -- ls -la). "
-        "Default: /bin/sh for interactive shell.",
+        help="Command to execute; put -- before it (e.g. -- ls -la), always "
+        "when DEPLOY_TOML is omitted. Default: /bin/sh for interactive shell.",
         metavar="COMMAND",
     )
 
+    if argv is None:
+        argv = sys.argv[1:]
+    # With DEPLOY_TOML optional, `depp exec -- ls` would otherwise bind `ls`
+    # to the toml positional. Everything after `--` is the command, full stop.
+    if argv[:1] == ["exec"] and "--" in argv:
+        separator = argv.index("--")
+        args = parser.parse_args(argv[:separator])
+        args.exec_command = argv[separator + 1 :]
+        return args
     return parser.parse_args(argv)
 
 

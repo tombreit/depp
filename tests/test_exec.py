@@ -7,6 +7,7 @@ from argparse import Namespace
 import pytest
 
 from depp import cli
+from depp.ansible_common.inventory import DeppConfig
 from depp.console.exec import build_exec_command
 
 exec_module = importlib.import_module("depp.console.exec")
@@ -108,6 +109,13 @@ def test_ssh_target_uses_fqdn_as_user_and_host():
     assert "StrictHostKeyChecking=yes" in argv
 
 
+def test_ssh_target_uses_explicit_user():
+    argv = build(user="surl")
+
+    assert f"surl@{FQDN}" in argv
+    assert f"{FQDN}@{FQDN}" not in argv
+
+
 @pytest.mark.parametrize(
     ("policy", "expected"),
     [
@@ -151,10 +159,18 @@ def test_local_host_shell_uses_shell_environment(monkeypatch):
 
 def test_cli_forwards_local_connection_to_exec(tmp_path, monkeypatch):
     captured = {}
+    config = DeppConfig.from_mapping(
+        tmp_path / "depp.toml",
+        {
+            "app": {"name": "example", "project_root": "."},
+            "host": {"fqdn": "example.com", "loopback_port": 8100, "user": "ex"},
+            "acme": {"contact_email": "ops@example.com"},
+        },
+    )
     monkeypatch.setattr(
         cli,
         "load_project",
-        lambda _args: (tmp_path / "depp.toml", {}, "example.com", "example"),
+        lambda _args: (tmp_path / "depp.toml", config, "example.com", "example"),
     )
 
     def fake_run_exec(**kwargs):
@@ -176,3 +192,4 @@ def test_cli_forwards_local_connection_to_exec(tmp_path, monkeypatch):
 
     assert result == 0
     assert captured["connection"] == "local"
+    assert captured["user"] == "ex"

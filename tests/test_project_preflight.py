@@ -15,7 +15,7 @@ def config(tmp_path, containerfile="Containerfile"):
                 "project_root": ".",
                 "containerfile": containerfile,
             },
-            "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+            "host": {"fqdn": "example.com", "loopback_port": 8100},
             "acme": {"contact_email": "ops@example.com"},
         },
     )

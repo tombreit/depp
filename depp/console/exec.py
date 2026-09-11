@@ -20,11 +20,13 @@ def build_exec_command(
     host_only: bool = False,
     host_key_policy: str = "strict",
     connection: str = "ssh",
+    user: str | None = None,
 ) -> list[str]:
     """Build the local ``ssh`` argv for one ``depp exec`` invocation.
 
     Args:
-        fqdn: Fully qualified domain name (used as both SSH user and host).
+        fqdn: Fully qualified domain name of the host.
+        user: The deployment user to log in as; defaults to the fqdn.
         container_name: Name of the podman container to exec into.
         command: Command and arguments to run. Empty for interactive shell.
         allocate_tty: If True, allocate a TTY on both hops (ssh and podman).
@@ -60,7 +62,7 @@ def build_exec_command(
     if allocate_tty:
         ssh_cmd.append("-tt")
 
-    ssh_cmd.append(f"{fqdn}@{fqdn}")
+    ssh_cmd.append(f"{user or fqdn}@{fqdn}")
 
     # The remote sshd hands the command to a shell, which re-splits words —
     # quote everything with shlex so arguments containing spaces, quotes or
@@ -88,11 +90,13 @@ def run_exec(
     host_only: bool = False,
     host_key_policy: str = "strict",
     connection: str = "ssh",
+    user: str | None = None,
 ) -> int:
     """Run a command on the remote host or inside a container via SSH.
 
     Args:
-        fqdn: Fully qualified domain name (used as both SSH user and host).
+        fqdn: Fully qualified domain name of the host.
+        user: The deployment user to log in as; defaults to the fqdn.
         container_name: Name of the podman container to exec into.
         command: Command and arguments to run. Empty for interactive shell.
         tty: Force TTY allocation on (True) or off (False). None auto-detects:
@@ -120,6 +124,7 @@ def run_exec(
             host_only=host_only,
             host_key_policy=host_key_policy,
             connection=connection,
+            user=user,
         ),
         check=False,
     )

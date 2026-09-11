@@ -20,7 +20,9 @@ EXPECTED_DIR = Path(__file__).parent / "expected"
 
 LEGACY_VHOST_VARS = {
     "inventory_hostname": "app.example.com",
-    "caddy_host_port": 8100,
+    "app_name": "example",
+    "deploy_user_name": "app.example.com",
+    "host_loopback_port": 8100,
     "acme_certificate_authority": "https://acme.example/directory",
     "acme_contact_email": "ops@example.com",
     "acme_external_account_binding": None,
@@ -28,7 +30,8 @@ LEGACY_VHOST_VARS = {
 
 LEGACY_UNIT_VARS = {
     "app_name": "example",
-    "caddy_host_port": 8100,
+    "host_loopback_port": 8100,
+    "app_listen_port": 80,
 }
 
 

@@ -9,7 +9,7 @@ from depp.ansible_common.inventory import DeppConfig
 def make_config(toml_path, data=None):
     merged = {
         "app": {"name": "example", "project_root": "."},
-        "host": {"fqdn": "example.com", "caddy_host_port": 8100},
+        "host": {"fqdn": "example.com", "loopback_port": 8100},
         "acme": {"contact_email": "ops@example.com"},
         **(data or {}),
     }
@@ -68,3 +68,19 @@ def test_provisioning_invokes_playbook_with_required_arguments(
     host_vars = captured["inventory"]["all"]["hosts"]["example.com"]
     assert host_vars["acme_contact_email"] == "ops@example.com"
     assert "STAGING" in capsys.readouterr().out
+
+
+def test_provisioning_summary_names_the_explicit_user(tmp_path, monkeypatch, capsys):
+    toml_path, _config, captured = prepare_provisioning(
+        monkeypatch,
+        tmp_path,
+        {"host": {"fqdn": "example.com", "loopback_port": 8100, "user": "surl"}},
+    )
+
+    assert cli.run_provisioning(provision_args(toml_path)) == 0
+
+    out = capsys.readouterr().out
+    assert "Deployment user: surl" in out
+    assert "surl@example.com" in out
+    host_vars = captured["inventory"]["all"]["hosts"]["example.com"]
+    assert host_vars["deploy_user"] == "surl"

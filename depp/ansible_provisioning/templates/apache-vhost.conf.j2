@@ -1,3 +1,13 @@
+# Managed by depp: rewritten on every `depp provision`. The Define lines
+# record what this host was provisioned with (a later run naming a
+# different deployment user is refused) and are available to the
+# directives below as ${DEPP_*}.
+Define DEPP_FQDN {{ inventory_hostname }}
+Define DEPP_APP {{ app_name }}
+Define DEPP_USER {{ deploy_user_name }}
+Define DEPP_LOOPBACK_PORT {{ host_loopback_port }}
+Define DEPP_BACKEND http://127.0.0.1:{{ host_loopback_port }}
+
 <MDomainSet {{ inventory_hostname }}>
     # mod_md: Automated certificate management via ACME
     # ACME settings are provided via depp.toml [acme]
@@ -77,8 +87,8 @@
 
     # Plain HTTP to Caddy inside the pod — no TLS needed on localhost.
     # 127.0.0.1 forces IPv4 (Apache resolves "localhost" to [::1]).
-    ProxyPass / "http://127.0.0.1:{{ caddy_host_port }}/"
-    ProxyPassReverse / "http://127.0.0.1:{{ caddy_host_port }}/"
+    ProxyPass / "http://127.0.0.1:{{ host_loopback_port }}/"
+    ProxyPassReverse / "http://127.0.0.1:{{ host_loopback_port }}/"
 
     # Forward the original scheme so the app sees HTTPS behind the proxy.
     RequestHeader set X-Forwarded-Proto "https"
@@ -101,3 +111,9 @@
     ErrorLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_error.log
     CustomLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_access.log combined
 </VirtualHost>
+
+UnDefine DEPP_BACKEND
+UnDefine DEPP_LOOPBACK_PORT
+UnDefine DEPP_USER
+UnDefine DEPP_APP
+UnDefine DEPP_FQDN

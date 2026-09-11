@@ -189,8 +189,12 @@ def validate_deploy_manifest(
     *,
     image_name: str,
     has_env_file: bool,
+    env_label: str = "deploy/.env",
 ) -> ManifestInfo:
-    """Validate depp-specific image and generated ConfigMap contracts."""
+    """Validate depp-specific image and generated ConfigMap contracts.
+
+    ``env_label`` names the env file in messages the way the operator sees it.
+    """
     info = inspect_kube_manifest(kube_file)
     expected_image = f"localhost/{image_name}:latest"
     if expected_image not in info.images:
@@ -202,13 +206,13 @@ def validate_deploy_manifest(
     generated_configmap = f"{image_name}-config"
     if has_env_file and generated_configmap not in info.configmap_refs:
         raise ManifestError(
-            f"deploy/.env exists but no container references generated ConfigMap "
+            f"{env_label} exists but no container references generated ConfigMap "
             f"{generated_configmap!r}"
         )
     if not has_env_file and generated_configmap in info.configmap_refs:
         raise ManifestError(
             f"{kube_file} references generated ConfigMap {generated_configmap!r} "
-            "but deploy/.env does not exist"
+            f"but {env_label} does not exist"
         )
     return info
 

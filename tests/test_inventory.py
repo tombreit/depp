@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from depp.ansible_common.inventory import (
+    CADDY_HOST_PORT_DEPRECATION,
     DEFAULT_ACME_CERTIFICATE_AUTHORITY,
     DEPP_SSH_KEY_PATH,
     DeppConfig,
@@ -13,13 +14,14 @@ from depp.ansible_common.inventory import (
     build_provisioning_inventory,
     build_restore_inventory,
     parse_acme_config,
-    parse_caddy_host_port,
     parse_deploy_config,
+    parse_listen_port,
+    parse_loopback_port,
     parse_server_aliases,
 )
 
 TOML = {
-    "host": {"fqdn": "app.example.com", "caddy_host_port": 8300},
+    "host": {"fqdn": "app.example.com", "loopback_port": 8300},
     "app": {"name": "myapp", "project_root": "."},
     "acme": {"contact_email": "ops@example.com"},
 }
@@ -37,9 +39,11 @@ def test_build_inventory_host_vars():
     assert host_vars["ansible_ssh_private_key_file"] == DEPP_SSH_KEY_PATH
     assert host_vars["app_name"] == "myapp"
     assert host_vars["image_name"] == "myapp"  # falls back to name
-    assert host_vars["caddy_host_port"] == 8300
+    assert host_vars["host_loopback_port"] == 8300
+    assert host_vars["app_listen_port"] == 80
     assert host_vars["health_path"] == "/"
     assert host_vars["health_timeout"] == 30
+    assert "caddy_host_port" not in host_vars
 
 
 def test_build_inventory_image_name_and_containerfile():
@@ -66,7 +70,7 @@ def test_build_inventory_local_connection_omits_ssh_identity():
 
 def test_build_inventory_missing_fqdn():
     with pytest.raises(ValueError, match="fqdn"):
-        config({**TOML, "host": {"caddy_host_port": 8300}})
+        config({**TOML, "host": {"loopback_port": 8300}})
 
 
 def test_build_inventory_missing_name():
@@ -75,14 +79,41 @@ def test_build_inventory_missing_name():
 
 
 def test_build_inventory_missing_port():
-    with pytest.raises(ValueError, match="caddy_host_port"):
+    with pytest.raises(ValueError, match="loopback_port"):
         config({**TOML, "host": {"fqdn": "app.example.com"}})
 
 
 @pytest.mark.parametrize("bad_port", ["8300", 0, -1, 65536, True, 3.14])
-def test_parse_caddy_host_port_rejects_non_port_values(bad_port):
-    with pytest.raises(ValueError, match="caddy_host_port"):
-        parse_caddy_host_port({"caddy_host_port": bad_port})
+def test_parse_loopback_port_rejects_non_port_values(bad_port):
+    with pytest.raises(ValueError, match="loopback_port"):
+        parse_loopback_port({"loopback_port": bad_port})
+
+
+def test_caddy_host_port_alias_is_accepted_with_deprecation():
+    """A depp.toml written for 0.0.1 keeps working and says what to rename."""
+    cfg = config({**TOML, "host": {"fqdn": "app.example.com", "caddy_host_port": 8300}})
+    assert cfg.host.loopback_port == 8300
+    assert cfg.deprecations == (CADDY_HOST_PORT_DEPRECATION,)
+    assert config().deprecations == ()
+
+
+def test_loopback_port_and_alias_together_is_an_error():
+    with pytest.raises(ValueError, match="both"):
+        parse_loopback_port({"loopback_port": 8300, "caddy_host_port": 8300})
+
+
+def test_listen_port_defaults_to_80():
+    assert parse_listen_port({}) == 80
+    cfg = config({**TOML, "app": {**TOML["app"], "listen_port": 8080}})
+    assert cfg.app.listen_port == 8080
+    host_vars = build_inventory(cfg)["all"]["hosts"]["app.example.com"]
+    assert host_vars["app_listen_port"] == 8080
+
+
+@pytest.mark.parametrize("bad_port", ["80", 0, 65536, True, None])
+def test_listen_port_rejects_non_port_values(bad_port):
+    with pytest.raises(ValueError, match="listen_port"):
+        parse_listen_port({"listen_port": bad_port})
 
 
 def test_parse_deploy_config_defaults():
@@ -107,7 +138,8 @@ def test_build_provisioning_inventory_defaults_to_staging_ca():
     ]
     assert host_vars["acme_certificate_authority"] == DEFAULT_ACME_CERTIFICATE_AUTHORITY
     assert host_vars["acme_contact_email"] == "ops@example.com"
-    assert host_vars["caddy_host_port"] == 8300
+    assert host_vars["host_loopback_port"] == 8300
+    assert host_vars["app_name"] == "myapp"
 
 
 def test_build_provisioning_inventory_supports_local_connection():
@@ -229,3 +261,28 @@ def test_data_inventory_supports_local_connection(builder):
     assert host_vars["ansible_connection"] == "local"
     assert "ansible_user" not in host_vars
     assert "ansible_ssh_private_key_file" not in host_vars
+
+
+def test_inventories_use_the_explicit_deploy_user():
+    cfg = config({**TOML, "host": {**TOML["host"], "user": "surl"}})
+
+    deploy_vars = build_inventory(cfg)["all"]["hosts"]["app.example.com"]
+    assert deploy_vars["ansible_user"] == "surl"
+
+    provision_vars = build_provisioning_inventory(cfg)["all"]["hosts"][
+        "app.example.com"
+    ]
+    assert provision_vars["deploy_user"] == "surl"
+    assert "ansible_user" not in provision_vars
+
+    backup_vars = build_backup_inventory(cfg, "/tmp/b", ["vol"], "pod")["all"]["hosts"][
+        "app.example.com"
+    ]
+    assert backup_vars["ansible_user"] == "surl"
+
+
+def test_provisioning_inventory_defaults_deploy_user_to_fqdn():
+    host_vars = build_provisioning_inventory(config())["all"]["hosts"][
+        "app.example.com"
+    ]
+    assert host_vars["deploy_user"] == "app.example.com"
