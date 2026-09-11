@@ -1,0 +1,12 @@
+# Install once per clone: `pre-commit install` (installs both hook types below).
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: local
+    hooks:
+      - id: strip-claude-session-trailer
+        name: strip Claude-Session trailer from commit message
+        # pre-commit passes the commit message file as the only argument.
+        entry: "sed -i '/^Claude-Session: /d'"
+        language: system
+        stages: [commit-msg]
