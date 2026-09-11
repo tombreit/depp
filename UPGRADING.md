@@ -18,6 +18,12 @@ not listed here keeps working unchanged; the commit history has the rest.
 
 ### Worth knowing
 
+- `depp backup`, `depp restore` and `depp reset` now work for an image that
+  runs as a non-root user: the remote rsync, listing and deletion run under
+  `podman unshare`. Before, they failed with "Permission denied" on every
+  file the container had written as a subuid. Restore no longer copies
+  ownership from the backup (which carries the workstation's uid) but sets the
+  volume's owner from `podman volume inspect`.
 - Re-running `depp provision` rewrites the Apache vhost: `Define` lines at the
   top, the catch-all `ProxyPass` moved to the end of the block. No functional
   change unless the project ships `deploy/vhost.conf`. It also ensures Apache

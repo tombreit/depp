@@ -551,6 +551,17 @@ mountpoint — no temporary files or `podman cp` required.
 depp backup [-v]
 ```
 
+The remote side of the copy runs under `podman unshare`, inside the rootless
+user namespace. That matters when the image runs as a non-root user
+(`USER 65532` in the Containerfile, say): rootless podman stores what that
+user writes under one of the deploy user's *subuids*, and the deploy user
+cannot read a `0600` file or enter a `0700` directory owned by a subuid.
+Inside the namespace it is root and reads everything. The local copy is
+written by your own unprivileged user, so modes and timestamps survive but
+ownership does not. With `--connection local` the copy is a plain local
+`rsync` (no remote side), so there the volume has to be readable by the
+current user.
+
 Backups are saved next to `depp.toml` (so under `deploy/` in the canonical
 layout):
 
@@ -601,7 +612,26 @@ my-partial-restore/
     path/to/single-file
 ```
 
-File permissions, ownership, and timestamps are preserved (`rsync --archive`).
+File permissions and timestamps are preserved (`rsync --archive`). Ownership is
+not taken from the backup, which carries your workstation's uid: the remote
+rsync runs under `podman unshare` (see `depp backup`) and sets every restored
+file to the volume's owner as `podman volume inspect` reports it — the uid the
+container runs as for a volume seeded from an image directory, otherwise root
+of the namespace, which is the deploy user.
+
+### `depp reset`
+
+Empties every PVC volume of the pod without deleting the volumes themselves.
+It takes a safety backup first (aborting if that fails), lists what it is
+about to delete with container-internal paths, and asks for confirmation. The
+deletion runs under `podman unshare` like backup and restore, so files the
+container wrote as a non-root uid are removed too. The pod stays running;
+restart it afterwards (a `depp deploy` does) so the application starts from
+the empty volume.
+
+```bash
+depp reset [DEPLOY_TOML] [-v] [--yes]
+```
 
 ### `depp exec`
 

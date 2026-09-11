@@ -5,7 +5,18 @@
 # restore_path to the corresponding volume mountpoint on the remote host.
 # The pod is stopped before the transfer and restarted after.
 #
-# --archive preserves permissions, ownership, and timestamps.
+# The remote rsync runs under `podman unshare` (see backup.yml for why): the
+# volume directory belongs to whatever uid the container runs as, which on the
+# host is one of the deploy user's subuids, writable only from inside the
+# user namespace.
+#
+# --archive preserves permissions and timestamps. Ownership is NOT taken from
+# the backup — the local copy was made by an unprivileged user and carries
+# the workstation's uid — but set to the volume's owner as podman reports it
+# (UID/GID from `podman volume inspect`, present when the volume was seeded
+# from an image directory; absent, hence 0, for a root-owned volume, where 0
+# inside the namespace is the deploy user on the host).
+#
 # The transfer is ADDITIVE (no --delete): files created on the remote after
 # the backup was taken are left in place. Run `depp reset` first for a
 # clean-slate restore.
@@ -57,9 +68,10 @@
         src: "{{ restore_path }}/{{ item.item }}/"
         dest: "{{ item.volumes[0].Mountpoint }}/"
         mode: push
+        rsync_path: podman unshare rsync
         rsync_opts:
-          - "--archive"
           - "--compress"
+          - "--chown={{ item.volumes[0].UID | default(0) }}:{{ item.volumes[0].GID | default(0) }}"
       loop: "{{ vol_info_results.results }}"
       loop_control:
         label: "{{ item.item }}"

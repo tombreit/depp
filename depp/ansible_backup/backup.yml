@@ -9,6 +9,14 @@
 # Volume data is accessed directly via the host-side mountpoint — no
 # temporary files or podman cp required.
 #
+# The remote rsync runs under `podman unshare`, i.e. inside the rootless user
+# namespace where the deploy user is root. Files a container writes as a
+# non-root uid (a Containerfile with USER 65532, say) belong to one of the
+# deploy user's subuids on the host, and the deploy user itself cannot read a
+# 0600 file or enter a 0700 directory owned by a subuid. The local receiver is
+# unprivileged, so rsync keeps modes and times but not ownership — which is
+# what a backup on a workstation should look like.
+#
 # Variables embedded in the inventory:
 #   pod_name          — pod name from kube.yaml metadata.name (what podman
 #                       kube play names the pod; may differ from app_name)
@@ -53,8 +61,8 @@
         src: "{{ item.volumes[0].Mountpoint }}/"
         dest: "{{ backup_local_dest }}/{{ item.item }}/"
         mode: pull
+        rsync_path: podman unshare rsync
         rsync_opts:
-          - "--archive"
           - "--compress"
       loop: "{{ vol_info_results.results }}"
       loop_control:

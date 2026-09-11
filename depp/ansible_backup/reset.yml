@@ -6,7 +6,11 @@
 # contents of those volumes are removed (the volumes themselves are preserved).
 #
 # The pod must be running; the playbook aborts with an error if it is not.
-# Volume data is accessed directly via the host-side mountpoint.
+# Volume data is accessed directly via the host-side mountpoint, but through
+# `podman unshare` (see backup.yml for why): a container running as a
+# non-root uid leaves files the deploy user can neither list nor delete from
+# outside the user namespace. `find` is used instead of the find/file modules
+# because no Ansible module can enter that namespace.
 # Container-internal paths are resolved via podman container inspect.
 #
 # Variables embedded in the inventory:
@@ -68,11 +72,16 @@
           }}
 
     - name: Find all files in each volume
-      ansible.builtin.find:
-        paths: "{{ item.volumes[0].Mountpoint }}"
-        recurse: true
-        file_type: any
+      ansible.builtin.command:
+        argv:
+          - podman
+          - unshare
+          - find
+          - "{{ item.volumes[0].Mountpoint }}"
+          - -mindepth
+          - "1"
       register: vol_files_results
+      changed_when: false
       loop: "{{ vol_info_results.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -82,9 +91,8 @@
         msg: >-
           Volume '{{ item.item.item }}'
           (container path: {{ vol_dest_map[item.item.item] | default('unknown') }})
-          — {{ item.files | length }} file(s):
-          {{ item.files
-             | map(attribute='path')
+          — {{ item.stdout_lines | length }} file(s):
+          {{ item.stdout_lines
              | map('replace',
                    item.item.volumes[0].Mountpoint,
                    vol_dest_map[item.item.item] | default(item.item.volumes[0].Mountpoint))
@@ -98,25 +106,22 @@
     # Deletion — only when do_delete is true
     # -------------------------------------------------------------------------
 
-    - name: Find top-level entries to delete in each volume
-      ansible.builtin.find:
-        paths: "{{ item.volumes[0].Mountpoint }}"
-        recurse: false
-        file_type: any
-      register: vol_toplevel_results
+    # -mindepth 1 -delete removes everything below the mountpoint, depth
+    # first, and leaves the mountpoint itself (the volume) in place.
+    - name: Delete all contents of each volume
+      ansible.builtin.command:
+        argv:
+          - podman
+          - unshare
+          - find
+          - "{{ item.volumes[0].Mountpoint }}"
+          - -mindepth
+          - "1"
+          - -delete
+      changed_when: true
       loop: "{{ vol_info_results.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: do_delete | bool
-
-    - name: Delete all contents of each volume
-      ansible.builtin.file:
-        path: "{{ entry.path }}"
-        state: absent
-      loop: "{{ vol_toplevel_results.results | map(attribute='files') | flatten }}"
-      loop_control:
-        loop_var: entry
-        label: "{{ entry.path }}"
       when: do_delete | bool
 
     - name: Reset complete
