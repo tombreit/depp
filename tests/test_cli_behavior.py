@@ -124,3 +124,13 @@ def test_resolve_toml_path_finds_deploy_dir_toml(tmp_path, monkeypatch):
     found = cli.resolve_toml_path(Namespace(toml_file=None))
 
     assert found == (tmp_path / "deploy" / "depp.toml").resolve()
+
+
+def test_connection_string_without_user_is_the_operator_login():
+    assert cli.ssh_connection_string("h.example.com", "accept-new") == (
+        "ssh -o StrictHostKeyChecking=accept-new h.example.com "
+        "(your own account, via your ssh config)"
+    )
+    assert cli.ssh_connection_string("h.example.com", "strict", user="app") == (
+        "ssh -i '~/.ssh/id_ed25519.depp' -o StrictHostKeyChecking=yes app@h.example.com"
+    )

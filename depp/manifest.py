@@ -111,6 +111,21 @@ def inspect_kube_manifest(kube_file: Path) -> ManifestInfo:
                 raise ManifestError(f"{location}.image must be a non-empty string")
             images.append(image)
 
+            # depp publishes the pod on 127.0.0.1:<loopback_port> so that Apache
+            # is the only way in. A hostPort would bind on all interfaces and
+            # bypass both the proxy and TLS.
+            ports = container.get("ports", [])
+            if not isinstance(ports, list):
+                raise ManifestError(f"{location}.ports must be a list")
+            for port_index, raw_port in enumerate(ports, start=1):
+                port = _mapping(raw_port, f"{location}.ports[{port_index}]")
+                if "hostPort" in port:
+                    raise ManifestError(
+                        f"{location}.ports[{port_index}].hostPort is not supported: "
+                        "depp publishes the pod on 127.0.0.1:<loopback_port> so "
+                        "Apache stays the only entry point; remove hostPort"
+                    )
+
             env_from = container.get("envFrom", [])
             if not isinstance(env_from, list):
                 raise ManifestError(f"{location}.envFrom must be a list")

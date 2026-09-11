@@ -153,11 +153,13 @@
             state: present
           loop: "{{ pvc_volumes | default([]) }}"
 
+        # 0640 like configmap.yaml: a manifest may embed its own ConfigMaps
+        # (a CA bundle, a Caddyfile) and nothing outside the user needs it.
         - name: Copy kube.yaml to remote config directory
           ansible.builtin.copy:
             src: "{{ local_kube_file }}"
             dest: "{{ remote_config_dir }}/kube.yaml"
-            mode: "0644"
+            mode: "0640"
 
         - name: "Generate systemd service file {{ systemd_service_filename }}"
           ansible.builtin.template:

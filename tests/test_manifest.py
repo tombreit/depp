@@ -162,3 +162,29 @@ def test_deploy_manifest_rejects_generated_configmap_without_env_file(tmp_path):
 
     with pytest.raises(ManifestError, match="deploy/.env does not exist"):
         validate_deploy_manifest(manifest, image_name="example", has_env_file=False)
+
+
+def test_manifest_rejects_host_port(tmp_path):
+    manifest = write_manifest(
+        tmp_path,
+        VALID_MANIFEST.replace(
+            "    - name: app\n",
+            "    - name: app\n      ports:\n"
+            "        - containerPort: 8000\n          hostPort: 8000\n",
+        ),
+    )
+
+    with pytest.raises(ManifestError, match="hostPort is not supported"):
+        inspect_kube_manifest(manifest)
+
+
+def test_manifest_accepts_container_port_without_host_port(tmp_path):
+    manifest = write_manifest(
+        tmp_path,
+        VALID_MANIFEST.replace(
+            "    - name: app\n",
+            "    - name: app\n      ports:\n        - containerPort: 8000\n",
+        ),
+    )
+
+    assert inspect_kube_manifest(manifest).pod_name == "example"

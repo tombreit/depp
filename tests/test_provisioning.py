@@ -81,7 +81,13 @@ def test_provisioning_summary_names_the_explicit_user(tmp_path, monkeypatch, cap
 
     out = capsys.readouterr().out
     assert "Deployment user: surl" in out
-    assert "surl@example.com" in out
+    # Provisioning connects as the operator, not as the (not yet existing)
+    # deploy user: no depp key, no user@ in the connection line.
+    connection_line = next(line for line in out.splitlines() if "Connection:" in line)
+    assert "surl@" not in connection_line
+    assert "-i" not in connection_line
+    assert "ssh -o StrictHostKeyChecking=yes example.com" in connection_line
+    assert "Create deployment user surl" in out
     host_vars = captured["inventory"]["all"]["hosts"]["example.com"]
     assert host_vars["deploy_user"] == "surl"
 

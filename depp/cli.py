@@ -210,16 +210,26 @@ def ssh_connection_string(
     connection: str = "ssh",
     user: str | None = None,
 ) -> str:
-    """The ssh invocation Ansible derives: depp key, deploy user, host."""
+    """The ssh invocation Ansible derives from the inventory.
+
+    With ``user`` (deploy, backup, restore, exec): the depp key and that
+    account. Without (provisioning): the deploy user does not exist yet, so the
+    inventory names no user and no key, and ssh runs as the operator's own
+    account through their ssh config — matching ``_apply_connection`` in
+    ``ansible_common.inventory``.
+    """
     if connection == "local":
         return "local (current user)"
+    if user is None:
+        argv = ["ssh", *host_key_options(host_key_policy), fqdn]
+        return f"{shlex.join(argv)} (your own account, via your ssh config)"
     return shlex.join(
         [
             "ssh",
             "-i",
             DEPP_SSH_KEY_PATH,
             *host_key_options(host_key_policy),
-            f"{user or fqdn}@{fqdn}",
+            f"{user}@{fqdn}",
         ]
     )
 
@@ -287,17 +297,18 @@ def run_provisioning(args: argparse.Namespace) -> int:
         extra_vars["vhost_extra_src"] = str(snippet)
 
     deploy_user = config.host.user
-    connection = ssh_connection_string(
-        hostname, args.host_key_policy, args.connection, deploy_user
-    )
+    # Provisioning runs as the operator with sudo; the deploy user is what it
+    # creates, not what it connects as.
+    connection = ssh_connection_string(hostname, args.host_key_policy, args.connection)
     lines = [
         f"Configuration file: {toml_path}",
-        f"Deployment user: {deploy_user}",
         f"Connection: {connection}",
+        f"Deployment user: {deploy_user} (created on the host; used by deploy/exec)",
         "",
         "What will be done:",
         f"  ✓ Create deployment user {deploy_user}",
-        f"  ✓ Create SSH key for user {deploy_user} at {DEPP_SSH_KEY_PATH}",
+        f"  ✓ Authorize {DEPP_SSH_KEY_PATH} (generated locally if missing) "
+        f"for user {deploy_user}",
         "  ✓ Install podman for rootless containers",
         "  ✓ Configure Apache reverse proxy → "
         f"127.0.0.1:{host_vars['host_loopback_port']}",

@@ -9,10 +9,12 @@
       register: podman_system
       changed_when: false
 
+    # containers.podman renamed the return key from podman_info to
+    # podman_system_info (1.16+); the ansible package pins neither, so accept both.
     - name: Require rootless Podman
       ansible.builtin.assert:
         that:
-          - podman_system.podman_info.host.security.rootless | bool
+          - (podman_system.podman_system_info | default(podman_system.podman_info)).host.security.rootless | bool
         fail_msg: Podman is available but is not running rootless for this user.
         quiet: true
 

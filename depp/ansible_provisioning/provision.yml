@@ -172,6 +172,15 @@
         state: present
         update_cache: true
 
+    # apt starts Apache as a Debian side effect, not as a guarantee: the
+    # reload handler below fails on a stopped service, and a masked or
+    # stopped Apache would otherwise provision "successfully" as a dead proxy.
+    - name: Ensure Apache is enabled and running
+      ansible.builtin.service:
+        name: apache2
+        enabled: true
+        state: started
+
     - name: Ensure depp web asset directory exists
       ansible.builtin.file:
         path: /var/www/depp
@@ -259,14 +268,15 @@
         - http2         # HTTP/2 for incoming client connections (Protocols h2)
         - proxy
         - proxy_http
-        - proxy_http2   # Required: ProxyPass uses h2:// scheme to avoid ALPN mismatch.
-                        # When mod_http2 is loaded and Protocols h2 is set, Apache
-                        # advertises h2 in ALPN even for https:// proxy connections.
-                        # Caddy then negotiates h2, but mod_proxy_http speaks HTTP/1.1
-                        # only — causing the SSL handshake to fail. Using h2:// with
-                        # mod_proxy_http2 resolves the protocol correctly end-to-end.
+        - proxy_http2   # Not used by depp's own ProxyPass, which speaks plain
+                        # http/1.1 to the loopback port. Kept enabled so that a
+                        # deploy/vhost.conf may proxy an h2c:// backend, and so
+                        # hosts provisioned earlier do not differ from new ones.
         - headers
-        - proxy_wstunnel # For WebSocket support
+        - proxy_wstunnel # WebSockets: a `ws://` ProxyPass target, or
+                        # `upgrade=websocket` on an http:// target (Apache ≥
+                        # 2.4.47), both from deploy/vhost.conf — depp's own
+                        # catch-all ProxyPass does not upgrade connections.
         - rewrite       # Required: the :80 vhost redirects to HTTPS with a
                         # RewriteRule so the *requested* hostname is preserved.
                         # mod_alias Redirect cannot echo back %{HTTP_HOST}, so
