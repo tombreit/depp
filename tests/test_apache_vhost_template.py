@@ -17,6 +17,7 @@ BASE_VARS = {
     "app_name": "example",
     "deploy_user_name": "app.example.com",
     "host_loopback_port": 8100,
+    "apache_extra_conf_path": "/etc/apache2/depp/app.example.com.vhost.conf",
     "acme_certificate_authority": "https://acme.example/directory",
     "acme_contact_email": "ops@example.com",
     "acme_external_account_binding": None,
@@ -116,6 +117,33 @@ def vhost_443(conf):
     """The text of the :443 vhost only."""
     start = conf.index("<VirtualHost *:443>")
     return conf[start : conf.index("</VirtualHost>", start)]
+
+
+def test_no_include_without_snippet():
+    assert directives(render(), "Include") == []
+
+
+def test_include_is_emitted_only_inside_the_https_vhost():
+    conf = render(vhost_extra_src="/project/deploy/vhost.conf")
+    assert directives(conf, "Include") == [
+        "Include /etc/apache2/depp/app.example.com.vhost.conf"
+    ]
+    assert "Include " in vhost_443(conf)
+    http_vhost = conf[
+        conf.index("<VirtualHost *:80>") : conf.index("<VirtualHost *:443>")
+    ]
+    assert "Include " not in http_vhost
+
+
+def test_include_follows_defaults_and_precedes_catch_all_proxypass():
+    """A restated directive in the snippet must win (last wins), and a project
+    ProxyPass must be matched before depp's catch-all (first wins)."""
+    body = vhost_443(render(vhost_extra_src="/project/deploy/vhost.conf"))
+    include = body.index("Include ")
+    assert include > body.index("RequestHeader unset X-Forwarded-Host")
+    assert include > body.index("LogLevel ")
+    assert include > body.index("Protocols ")
+    assert include < body.index('ProxyPass / "')
 
 
 def test_maintenance_exclusion_precedes_catch_all_proxypass():

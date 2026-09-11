@@ -23,6 +23,7 @@ LEGACY_VHOST_VARS = {
     "app_name": "example",
     "deploy_user_name": "app.example.com",
     "host_loopback_port": 8100,
+    "apache_extra_conf_path": "/etc/apache2/depp/app.example.com.vhost.conf",
     "acme_certificate_authority": "https://acme.example/directory",
     "acme_contact_email": "ops@example.com",
     "acme_external_account_binding": None,

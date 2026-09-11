@@ -46,6 +46,7 @@ from depp.configmap import render_configmap
 from depp.doctor import DoctorCheck, control_node_checks
 from depp.layout import DEPLOY_DIR_NAME, TOML_FILENAME, find_default_toml
 from depp.manifest import ManifestError, parse_kube_manifest, validate_deploy_manifest
+from depp.vhost import VhostSnippetError, validate_vhost_snippet
 
 EXIT_SUCCESS = 0
 EXIT_ERROR = 1
@@ -253,6 +254,11 @@ def require_confirmation_input(*, skip: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def apache_snippet_path(fqdn: str) -> str:
+    """Where provision.yml installs deploy/vhost.conf; mirrors its play vars."""
+    return f"/etc/apache2/depp/{fqdn}.vhost.conf"
+
+
 def run_provisioning(args: argparse.Namespace) -> int:
     require_confirmation_input(skip=args.check or args.yes)
     toml_path, config, hostname, _app_name = load_project(args)
@@ -270,6 +276,16 @@ def run_provisioning(args: argparse.Namespace) -> int:
     )
     host_vars = inventory["all"]["hosts"][hostname]
 
+    extra_vars: dict[str, str] = {}
+    snippet = config.vhost_snippet
+    if snippet.exists():
+        try:
+            validate_vhost_snippet(snippet)
+        except VhostSnippetError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return EXIT_ERROR
+        extra_vars["vhost_extra_src"] = str(snippet)
+
     deploy_user = config.host.user
     connection = ssh_connection_string(
         hostname, args.host_key_policy, args.connection, deploy_user
@@ -286,6 +302,11 @@ def run_provisioning(args: argparse.Namespace) -> int:
         "  ✓ Configure Apache reverse proxy → "
         f"127.0.0.1:{host_vars['host_loopback_port']}",
     ]
+    if snippet.exists():
+        lines.append(
+            f"  ✓ Install Apache vhost snippet {config.display(snippet)} → "
+            f"{apache_snippet_path(hostname)} (root-parsed Apache config)"
+        )
     if host_vars.get("acme_external_account_binding"):
         lines.append("  ✓ Configure ACME External Account Binding")
     if (
@@ -325,7 +346,7 @@ def run_provisioning(args: argparse.Namespace) -> int:
     return run_ansible_playbook(
         playbook_path=playbook,
         inventory=inventory,
-        extra_vars={},
+        extra_vars=extra_vars,
         check_mode=args.check,
         verbose=args.verbose,
         ask_become_pass=args.ask_become_pass,
@@ -949,6 +970,14 @@ def run_doctor(args: argparse.Namespace) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return EXIT_ERROR
 
+    snippet = config.vhost_snippet
+    if snippet.exists():
+        try:
+            validate_vhost_snippet(snippet)
+        except VhostSnippetError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return EXIT_ERROR
+
     if env_path.exists():
         secure_env = not bool(env_path.stat().st_mode & 0o077)
         env_label = config.display(env_path)
@@ -971,6 +1000,7 @@ def run_doctor(args: argparse.Namespace) -> int:
         f"Manifest:      {kube_file}",
         f"Pod:           {manifest.pod_name}",
         f"Env file:      {env_path if env_path.exists() else 'none'}",
+        f"Vhost snippet: {snippet if snippet.exists() else 'none'}",
         f"Git:           {commit_hash} ({'dirty' if git_dirty else 'clean'})",
         f"Target:        {fqdn}",
         f"Deploy user:   {config.host.user}",

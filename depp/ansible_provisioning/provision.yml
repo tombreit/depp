@@ -14,6 +14,8 @@
 #                      sets it; the default() below only covers ad-hoc runs)
 #   deploy_user_name — the resolved account name used by every task
 #   depp_ssh_key     — path to the dedicated depp SSH private key
+#   vhost_extra_src  — extra var set by the CLI only when the project ships
+#                      deploy/vhost.conf: its local path
 #
 
 - name: Prepare Host for Rootless Podman Deployment
@@ -36,6 +38,10 @@
     # Apache configuration
     apache_conf_path: "/etc/apache2/sites-available/{{ inventory_hostname }}.conf"
     apache_enabled_path: "/etc/apache2/sites-enabled/{{ inventory_hostname }}.conf"
+    # The project's deploy/vhost.conf, included from inside the :443 vhost.
+    # Mirrored by apache_snippet_path() in depp/cli.py for the summary.
+    apache_extra_dir: /etc/apache2/depp
+    apache_extra_conf_path: "{{ apache_extra_dir }}/{{ inventory_hostname }}.vhost.conf"
 
   pre_tasks:
     - name: Ensure dedicated depp SSH keypair exists locally
@@ -184,6 +190,52 @@
         group: root
         mode: "0644"
 
+    # The vhost task below runs with no_log, which also censors the message of
+    # an undefined-variable failure. Check the inputs where the error is legible.
+    - name: Check the variables the vhost template needs
+      ansible.builtin.assert:
+        that:
+          - app_name is defined
+          - host_loopback_port is defined
+          - acme_contact_email is defined
+          - acme_certificate_authority is defined
+        fail_msg: >-
+          provisioning inventory is missing app_name, host_loopback_port,
+          acme_contact_email or acme_certificate_authority
+        quiet: true
+
+    - name: Ensure the directory for project vhost snippets exists
+      ansible.builtin.file:
+        path: "{{ apache_extra_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Copied, not templated: the snippet is the operator's Apache config and
+    # must reach the host byte for byte (a "{{" in an Apache comment must not
+    # be evaluated). Errors in it surface with the file and line number from
+    # `apachectl configtest` in the handler, before Apache is reloaded.
+    - name: Install project vhost snippet
+      ansible.builtin.copy:
+        src: "{{ vhost_extra_src }}"
+        dest: "{{ apache_extra_conf_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+      when: vhost_extra_src is defined
+      notify: Reload Apache
+
+    # The vhost only includes the file when the project ships one, so a stale
+    # copy would be dead config — but a dead copy of what was once live
+    # directives is exactly what an operator would later misread.
+    - name: Remove a previously installed vhost snippet the project no longer ships
+      ansible.builtin.file:
+        path: "{{ apache_extra_conf_path }}"
+        state: absent
+      when: vhost_extra_src is not defined
+      notify: Reload Apache
+
     # Renders the ACME external account binding (a CA credential) when one is
     # configured, so the file must not be world-readable and must not be echoed
     # into the Ansible log.
@@ -241,6 +293,7 @@
           - "Lingering enabled for user {{ deploy_user_name }}"
           - "Loopback port: {{ host_loopback_port }} (Apache → 127.0.0.1:{{ host_loopback_port }})"
           - "Apache config: {{ apache_conf_path }}"
+          - "Vhost snippet: {{ apache_extra_conf_path if vhost_extra_src is defined else 'none' }}"
           - "Podman: Installed"
 
   handlers:

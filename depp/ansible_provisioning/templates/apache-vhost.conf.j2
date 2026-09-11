@@ -1,7 +1,6 @@
-# Managed by depp: rewritten on every `depp provision`. The Define lines
-# record what this host was provisioned with (a later run naming a
-# different deployment user is refused) and are available to the
-# directives below as ${DEPP_*}.
+# Managed by depp: rewritten on every `depp provision`. Project-specific
+# directives belong in deploy/vhost.conf, which depp installs to
+# {{ apache_extra_conf_path }} and includes below.
 Define DEPP_FQDN {{ inventory_hostname }}
 Define DEPP_APP {{ app_name }}
 Define DEPP_USER {{ deploy_user_name }}
@@ -85,11 +84,6 @@ Define DEPP_BACKEND http://127.0.0.1:{{ host_loopback_port }}
     # Tell clients/monitors this is a short, retryable state (not a real outage).
     Header always set Retry-After "5" "expr=%{REQUEST_STATUS} == 503"
 
-    # Plain HTTP to Caddy inside the pod — no TLS needed on localhost.
-    # 127.0.0.1 forces IPv4 (Apache resolves "localhost" to [::1]).
-    ProxyPass / "http://127.0.0.1:{{ host_loopback_port }}/"
-    ProxyPassReverse / "http://127.0.0.1:{{ host_loopback_port }}/"
-
     # Forward the original scheme so the app sees HTTPS behind the proxy.
     RequestHeader set X-Forwarded-Proto "https"
 
@@ -110,6 +104,21 @@ Define DEPP_BACKEND http://127.0.0.1:{{ host_loopback_port }}
     LogLevel info ssl:warn
     ErrorLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_error.log
     CustomLog ${APACHE_LOG_DIR}/{{ inventory_hostname }}_access.log combined
+{% if vhost_extra_src is defined %}
+
+    # Project directives from deploy/vhost.conf, installed verbatim by depp.
+    # Placed after depp's defaults (a restated directive such as LogLevel,
+    # Protocols or a RequestHeader wins) and before the catch-all ProxyPass
+    # (a more specific ProxyPass here takes precedence).
+    Include {{ apache_extra_conf_path }}
+{% endif %}
+
+    # Plain HTTP to the pod's published loopback port — no TLS needed on
+    # localhost. 127.0.0.1 forces IPv4 (Apache resolves "localhost" to [::1]).
+    # Last on purpose: ProxyPass directives match in order, so the maintenance
+    # exclusion above and any project ProxyPass must come before this one.
+    ProxyPass / "http://127.0.0.1:{{ host_loopback_port }}/"
+    ProxyPassReverse / "http://127.0.0.1:{{ host_loopback_port }}/"
 </VirtualHost>
 
 UnDefine DEPP_BACKEND

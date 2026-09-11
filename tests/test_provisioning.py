@@ -84,3 +84,41 @@ def test_provisioning_summary_names_the_explicit_user(tmp_path, monkeypatch, cap
     assert "surl@example.com" in out
     host_vars = captured["inventory"]["all"]["hosts"]["example.com"]
     assert host_vars["deploy_user"] == "surl"
+
+
+def write_snippet(tmp_path, contents):
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+    snippet = deploy_dir / "vhost.conf"
+    snippet.write_text(contents)
+    return snippet
+
+
+def test_provisioning_passes_snippet_path_as_extra_var(tmp_path, monkeypatch, capsys):
+    toml_path, _config, captured = prepare_provisioning(monkeypatch, tmp_path)
+    snippet = write_snippet(tmp_path, "Protocols http/1.1\n")
+
+    assert cli.run_provisioning(provision_args(toml_path)) == 0
+
+    assert captured["extra_vars"] == {"vhost_extra_src": str(snippet)}
+    out = capsys.readouterr().out
+    assert "deploy/vhost.conf" in out
+    assert "/etc/apache2/depp/example.com.vhost.conf" in out
+
+
+def test_provisioning_without_snippet_passes_no_extra_var(tmp_path, monkeypatch):
+    toml_path, _config, captured = prepare_provisioning(monkeypatch, tmp_path)
+
+    assert cli.run_provisioning(provision_args(toml_path)) == 0
+
+    assert captured["extra_vars"] == {}
+
+
+def test_provisioning_rejects_snippet_opening_a_vhost(tmp_path, monkeypatch, capsys):
+    toml_path, _config, captured = prepare_provisioning(monkeypatch, tmp_path)
+    write_snippet(tmp_path, "<VirtualHost *:443>\n</VirtualHost>\n")
+
+    assert cli.run_provisioning(provision_args(toml_path)) == cli.EXIT_ERROR
+
+    assert captured == {}
+    assert "VirtualHost" in capsys.readouterr().err
