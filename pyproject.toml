@@ -37,8 +37,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    # Arrives transitively via ansible, but the Apache vhost template tests
-    # importorskip on it — declare it so they cannot silently skip.
+    # Arrives transitively via ansible; declared so the template tests do not
+    # depend on ansible's dependency tree staying the same.
     "jinja2",
     "ruff",
     "ansible-lint",

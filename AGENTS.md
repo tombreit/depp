@@ -17,8 +17,16 @@ involved: the image is transferred directly.
 - Control node: Python 3.12+, Ansible 14+.
 - Deployment runs entirely as a non-privileged user; only provisioning uses
   `become`.
-- The pod is defined by a developer-authored `deploy/kube.yaml`; depp generates
-  only the systemd unit, from a Jinja2 template.
+- The pod is defined by a developer-authored `kube.yaml` in the project's
+  deploy directory (`deploy/` next to `depp.toml` in the canonical layout,
+  `<project_root>/deploy/` for a root-level or external `depp.toml`; see
+  `depp/layout.py`). An optional `vhost.conf` there is root-parsed Apache
+  config installed by `provision`. depp generates only the systemd unit and
+  the Apache vhost, from Jinja2 templates pinned by expected renders in
+  `tests/expected/`.
+- Several apps are deployed with depp already: config keys stay accepted
+  (deprecate, do not remove) and the generated unit must not change for a
+  project that uses no new option.
 
 ## Conventions
 
@@ -26,5 +34,6 @@ involved: the image is transferred directly.
 - Never pass secrets on a command line — they belong in the generated inventory
   or a ConfigMap, and tasks that touch them need `no_log: true`.
 - Build subprocess calls as argument lists; no `shell=True`.
-- Run `pytest` and `ruff check .` before finishing. See the Development section
+- Run `pytest`, `ruff check .`, `ruff format --check .` and `ansible-lint depp/`
+  before finishing. See the Development section
   of the README for setup.

@@ -18,7 +18,10 @@ systemd service unit from a bundled template.
 - Direct image transfer, no container registry needed
 - `.env` files for secrets, rendered into a Kubernetes ConfigMap at runtime
 - Framework-agnostic application image built from the local project
-- Project pod must serve HTTP on port 80, typically through a Caddy sidecar
+- Project pod serves plain HTTP on `[app] listen_port` (default 80), directly
+  or through a Caddy sidecar; host Apache terminates TLS
+- Per-project Apache directives (IP allow-lists, HSTS, WebSockets) via an
+  optional `deploy/vhost.conf`
 - Systemd integration via a generated service unit
 - Backup and restore of named podman volumes
 
@@ -49,34 +52,45 @@ ConfigMap is rendered in pure Python.
 
 ### 2. Create deployment files
 
+Everything depp needs lives in one `deploy/` directory, so depp does not creep
+into the project it ships:
+
 ```txt
 myproject/
   Containerfile
-  depp.toml
   deploy/
-    kube.yaml  # pod definition (dev + production)
-    .env       # optional secrets (gitignored)
+    depp.toml    # deployment configuration (this is what depp reads)
+    kube.yaml    # pod definition (dev + production)
+    .env         # optional secrets (gitignored)
+    vhost.conf   # optional Apache directives for this project
 ```
 
-### 3. Create `depp.toml`
+Projects that keep `depp.toml` at the project root next to `deploy/`, or in a
+separate configuration repository, keep working; see
+[Project Layout](#project-layout).
 
-It can live inside the project or in a separate configuration repository.
-`project_root` identifies the target project:
+### 3. Create `depp.toml`
 
 ```toml
 [app]
 # Required project slug; also the default image name.
 name = "myapp"
-# Required path, relative to this file or absolute.
-project_root = "."
+# Optional. Defaults to ".." when this file lives in deploy/, else to its own
+# directory. Relative to this file, or absolute.
+# project_root = ".."
 # image_name = "myapp"
 # containerfile = "Dockerfile"  # Defaults to Containerfile.
+# The port the pod serves plain HTTP on (the app itself or a Caddy sidecar).
+# listen_port = 80
 
 [host]
-# Required hostname; also used as the deployment user.
+# Required hostname: the Apache vhost, the certificate, the SSH target.
 fqdn = "myapp.example.com"
-# Required pod port exposed to the host and proxied by Apache.
-caddy_host_port = 8100
+# Required. A free 127.0.0.1 port on the host: the pod is published there and
+# Apache proxies to it. Check with:  ss -ltnp | grep 127.0.0.1
+loopback_port = 8100
+# Optional. The Linux account depp creates and deploys as; defaults to fqdn.
+# user = "myapp"
 # server_aliases = ["www.myapp.example.com"]
 
 [acme]
@@ -97,10 +111,19 @@ configuration error before Ansible starts. Defaults such as `image_name`,
 `containerfile`, and health settings are resolved once and shared by summaries
 and every inventory builder.
 
-Because `fqdn` is deliberately also the SSH deployment username, it must be a
-lowercase DNS name no longer than 32 characters. App and image names must be
-lowercase DNS labels. This preserves depp's existing one-app-per-user identity
-model rather than introducing separate host and user settings.
+depp runs one app per Linux user. By default that user *is* the `fqdn`, which
+keeps every name on the host (user, home, vhost, logs) derivable from one
+value — but `useradd` caps names at 32 characters, so the fqdn inherits that
+cap. Set `[host] user` to name the account yourself; the fqdn may then be any
+lowercase DNS name up to 253 characters. Choose the user before the first
+`depp provision`: depp records which account it provisioned for a host and
+refuses to create a second one (see
+[Changing the deployment user](#changing-the-deployment-user)). App and image
+names must be lowercase DNS labels.
+
+`caddy_host_port` is the 0.0.1 name of `loopback_port`. It is still accepted
+with a warning, so a `depp.toml` written for an already-deployed app keeps
+working unchanged; see [Upgrading from 0.0.1](#upgrading-from-001).
 
 ### Serving additional hostnames
 
@@ -112,7 +135,7 @@ gets a 403. If a friendlier public name should reach the app, list it under
 ```toml
 [host]
 fqdn = "myapp.apps.example.com"
-caddy_host_port = 8100
+loopback_port = 8100
 server_aliases = ["myapp.example.com"]
 ```
 
@@ -133,9 +156,11 @@ Two things worth knowing:
 This one-time operation needs sudo on the remote host:
 
 ```bash
-depp provision depp.toml
-depp provision depp.toml --check
+depp provision            # reads ./deploy/depp.toml, then ./depp.toml
+depp provision --check
 ```
+
+Every command takes an explicit path instead (`depp provision path/to/depp.toml`).
 
 SSH host keys are verified strictly by default. Before the first depp
 connection, connect with `ssh` and verify the host key through your normal
@@ -147,10 +172,10 @@ disposable test systems.
 ### 5. Deploy your application
 
 ```bash
-depp doctor depp.toml
-depp deploy depp.toml
-depp deploy depp.toml --check
-depp deploy depp.toml -v
+depp doctor
+depp deploy
+depp deploy --check
+depp deploy -v
 ```
 
 Repeat step 5 for updates.
@@ -167,19 +192,45 @@ stock third-party images without a local build project is not supported yet.
 ## Architecture
 
 ```txt
-Internet → Apache (host, HTTP/SSL) → 127.0.0.1:<port> → Caddy (container) → App
+Internet → Apache (host, TLS) → 127.0.0.1:<loopback_port> → pod :<listen_port> (App, or Caddy → App)
 ```
 
-- **Apache**: Handles external traffic, TLS termination (on host).
-- **Caddy**: Application reverse proxy inside the pod.
+- **Apache**: Handles external traffic, TLS termination, and any per-project
+  access rules (on host). Project directives come from `deploy/vhost.conf`.
+- **Pod**: Serves plain HTTP on `listen_port`. An app that serves its own
+  static files (a Go binary, Django with WhiteNoise) needs no sidecar; an app
+  that wants a static-file server or several backends puts a Caddy container
+  in front, as the bundled example does.
 - Deployments use dedicated non-privileged users; provisioning uses `become: true`.
 
 Multiple apps per host via distinct users/ports.
 
 ## Project Layout
 
-Your project needs a `deploy/` directory holding the Pod manifest and,
-optionally, the secrets env file. Fixed paths, not configurable:
+depp reads one directory: the one that holds `kube.yaml`, the optional `.env`
+and the optional `vhost.conf`. Where that directory is follows from where
+`depp.toml` lives — the file names themselves are fixed:
+
+| `depp.toml` location | `project_root` default | deploy files |
+| --- | --- | --- |
+| `<project>/deploy/depp.toml` (canonical) | `..` | next to `depp.toml` |
+| `<project>/depp.toml` (0.0.1 layout) | `.` | `<project>/deploy/` |
+| elsewhere, e.g. a config repo, with `project_root` set | — | `<project_root>/deploy/` |
+
+The rule is keyed on the directory *name* `deploy`, not on the toml being
+inside the project, so a configuration repository does not suddenly have the
+files looked up next to its toml. Local backups always land in `backups/` next
+to `depp.toml` (`deploy/backups/` in the canonical layout; gitignore it, or
+`deploy/` as a whole, since it sits beside `.env`).
+
+`project_root` is the container build context. Keep `deploy/` out of the image
+with a `.containerignore` (a `COPY . .` would otherwise bake `.env` into a
+layer):
+
+```txt
+.git
+/deploy
+```
 
 ### `deploy/kube.yaml` (dev + production)
 
@@ -247,21 +298,27 @@ Before invoking Ansible, depp validates the local deployment inputs:
 
 - `containerfile` must be a relative path to an existing regular file inside
   `project_root`; it defaults to `Containerfile`.
-- `deploy/kube.yaml` must be valid UTF-8 YAML containing exactly one Pod.
+- `kube.yaml` must be valid UTF-8 YAML containing exactly one Pod.
 - The Pod needs a valid name and at least one regular container. Container,
   volume, PVC, and ConfigMap names must use lowercase Kubernetes name syntax.
 - Container and volume names must be unique, and every `volumeMount` must refer
   to a declared volume.
+- No container may declare a `hostPort`: depp publishes the pod on
+  `127.0.0.1:<loopback_port>` so that Apache stays the only entry point, and a
+  `hostPort` would bind on all interfaces and bypass it (and TLS).
 - A regular or init container must reference
   `localhost/<image_name>:latest`, the image built by depp.
 - When `deploy/.env` exists, a regular or init container must reference the
   generated `<image_name>-config` ConfigMap. Referencing that generated
   ConfigMap without an env file is also rejected.
 
-The Pod must serve HTTP on port 80 for the generated systemd unit. Kubernetes
+The Pod must serve HTTP on `[app] listen_port` (default 80): the generated
+unit publishes `127.0.0.1:<loopback_port>:<listen_port>`. Kubernetes
 `containerPort` declarations are optional metadata and do not prove which port
 a process actually listens on, so depp documents but cannot preflight that
-runtime requirement.
+runtime requirement. Set `listen_port` to whatever the app binds — an
+unprivileged port lets a non-root container serve without a sysctl or an
+added capability.
 
 ### HTTP probe requirement
 
@@ -272,7 +329,7 @@ every probe fails with `curl: not found`, and a liveness probe can repeatedly
 restart an otherwise healthy container.
 
 This does not apply to depp's post-deploy health gate described below. That
-check runs from the host through the published Caddy port and does not require
+check runs from the host through the loopback port and does not require
 `curl` in the application image.
 
 ## What depp does
@@ -286,9 +343,9 @@ check runs from the host through the published Caddy port and does not require
 3. Saves it as an OCI archive (`.tar`)
 4. Transfers it to the remote host (rsync)
 5. Ensures the named volumes declared in `kube.yaml` exist (`podman volume`)
-6. Copies `deploy/kube.yaml` → `~/config/{name}/kube.yaml`
+6. Copies `kube.yaml` → `~/config/{name}/kube.yaml`
 7. Generates `{name}.service` from bundled template → `~/.config/systemd/user/`
-8. Renders `deploy/.env`, when present, into
+8. Renders `.env`, when present, into
   `~/config/{name}/configmap.yaml` and injects it with `--configmap`
 9. Loads the image, tags it as `:latest`
 10. Reloads systemd and restarts the pod
@@ -314,7 +371,7 @@ possible and makes it graceful:
   monitors see an intentional, retryable state. The page is provisioned to
   `/var/www/depp/maintenance.html`.
 - **The deploy is health-gated.** After the restart, depp polls
-  `http://127.0.0.1:<caddy_host_port><health_path>` until the app actually
+  `http://127.0.0.1:<loopback_port><health_path>` until the app actually
   answers, and **fails the deploy** if it never comes up — so a crash-looping
   build is caught instead of being reported as a green deploy.
 
@@ -326,7 +383,7 @@ fields are optional and shown here with their defaults):
 
 ```toml
 [deploy]
-health_path = "/"     # URL path polled on the published caddy port
+health_path = "/"     # URL path polled on the host loopback port
 health_timeout = 30   # seconds to keep polling before failing the deploy
 ```
 
@@ -342,9 +399,94 @@ than blocking pod startup on them.
 ### `depp provision`
 
 1. Installs podman on the remote host
-2. Creates a dedicated deployment user
+2. Creates the deployment user (`[host] user`, default: the fqdn). The
+   generated vhost records it (`Define DEPP_USER`), and a later run naming a
+   different user is refused
 3. Enables systemd lingering
-4. Configures Apache reverse proxy
+4. Installs Apache, ensures it is running, and writes the vhost for `fqdn`
+5. Installs the project's `deploy/vhost.conf`, when present, to
+   `/etc/apache2/depp/<fqdn>.vhost.conf` (and removes it when the project no
+   longer ships one)
+
+Apache is only reloaded after `apachectl configtest` passes, so a broken
+vhost or snippet fails the provisioning run with Apache's own error and leaves
+the running configuration untouched.
+
+#### Customizing the Apache vhost (`deploy/vhost.conf`)
+
+depp's vhost is deliberately generic: TLS via mod_md, an HTTPS redirect, a
+maintenance page during deploys, and a catch-all `ProxyPass` to the pod. What
+a project needs beyond that goes into `deploy/vhost.conf`, a plain Apache
+fragment that `depp provision` installs verbatim and includes from inside the
+`<VirtualHost *:443>` block:
+
+```apache
+# deploy/vhost.conf — spliced into <VirtualHost *:443> by depp
+
+# Only trusted networks may reach the admin area.
+<LocationMatch "^/manage(/|$)">
+    Require ip 192.0.2.0/24 2001:db8::/32
+</LocationMatch>
+
+# Pin HTTPS in browsers (depp's own MDRequireHttps is "temporary").
+Header always set Strict-Transport-Security "max-age=31536000"
+
+# WebSockets: upgrade one path (Apache ≥ 2.4.47), leave the rest as HTTP.
+ProxyPass /ws ${DEPP_BACKEND}/ws upgrade=websocket
+
+# Restate any of depp's defaults to override them: last directive wins.
+Protocols http/1.1
+LogLevel warn
+```
+
+The fragment sits **after** depp's own directives and **before** the catch-all
+`ProxyPass /`. Two consequences follow: a directive you restate (`Protocols`,
+`LogLevel`, a `RequestHeader`) replaces depp's, and a `ProxyPass` you add is
+matched first, because Apache matches `ProxyPass` prefixes in order. depp
+defines five variables the fragment may use:
+
+| Variable | Value |
+| --- | --- |
+| `${DEPP_FQDN}` | `[host] fqdn` |
+| `${DEPP_APP}` | `[app] name` |
+| `${DEPP_USER}` | the deployment user (`[host] user`, default: the fqdn) |
+| `${DEPP_LOOPBACK_PORT}` | `[host] loopback_port` |
+| `${DEPP_BACKEND}` | `http://127.0.0.1:<loopback_port>` |
+
+Things to know:
+
+- **It is root-parsed Apache configuration.** An `Include`, a `CustomLog "|…"`
+  pipe or a `ScriptAlias` in it runs with Apache's privileges. Treat the file
+  with the trust you give the `sudo` step that installs it. It is applied only
+  by `depp provision` (elevated, confirmed), never by `depp deploy`, so a
+  change to it cannot ride along the unprivileged deploy path.
+- **Only the `:443` vhost.** The `:80` vhost exists to redirect to HTTPS and to
+  answer ACME challenges; there is no hook for it on purpose.
+- **depp validates only what Apache would accept but cannot mean here:** the
+  file must not open its own `<VirtualHost>` or `<MDomainSet>`. Everything
+  else is checked by `apachectl configtest` on the host, before the reload.
+  `--check` cannot run that test.
+- **`Require ip` sees the address Apache sees.** For a `server_alias` that an
+  upstream proxy forwards here, that is the proxy's address, not the
+  visitor's. depp does not configure `mod_remoteip`; add
+  `RemoteIPHeader`/`RemoteIPTrustedProxy` to the fragment yourself if you
+  need client addresses behind another proxy.
+- The installed copy is at `/etc/apache2/depp/<fqdn>.vhost.conf` (root, 0640)
+  for inspection; `apachectl -S` shows the vhost that includes it.
+
+#### Changing the deployment user
+
+Everything the pod owns — the podman storage and named volumes, the systemd
+units, `~/config/<app>` — lives in the deployment user's home. Changing
+`[host] user` on a host that is already provisioned is therefore a migration,
+not a setting, and `depp provision` refuses it. To migrate by hand, as root,
+with the service stopped (`systemctl --user stop <app>` as the old user):
+`usermod -l NEW -d /home/NEW -m OLD`, `loginctl disable-linger OLD`,
+`loginctl enable-linger NEW`, change the `Define DEPP_USER` line in
+`/etc/apache2/sites-available/<fqdn>.conf` to NEW (or delete that file), then
+run `depp provision` and `depp deploy`. Hosts provisioned by 0.0.1 have no
+such line and are recognised by their fqdn-named user instead; they are
+refused the same way.
 
 ### `depp doctor`
 
@@ -360,7 +502,7 @@ Runs non-mutating deployment-readiness checks:
 Run doctor after provisioning and before the first deployment:
 
 ```bash
-depp doctor depp.toml
+depp doctor
 ```
 
 A dirty working tree makes doctor return status 1 because a normal deployment
@@ -391,10 +533,11 @@ external_account_binding = "kid hmac"
 certificate_authority = "https://acme-v02.api.letsencrypt.org/directory"
 ```
 
-The `[acme]` keys are merged as-is over the project `depp.toml`'s `[acme]`
-section (the operator value wins; there is no validation of the keys). The
-file is loaded automatically when it exists (`$XDG_CONFIG_HOME` respected);
-use `--secrets FILE` on `provision` to point elsewhere.
+The `[acme]` keys are merged over the project `depp.toml`'s `[acme]` section
+(the operator value wins) and validated like the project's own: unknown keys
+are rejected. The file is loaded automatically when it exists
+(`$XDG_CONFIG_HOME` respected); use `--secrets FILE` on `provision` to point
+elsewhere.
 
 ### `depp backup`
 
@@ -405,10 +548,11 @@ automatically. The pod must be running. Volume data is accessed via the host-sid
 mountpoint — no temporary files or `podman cp` required.
 
 ```bash
-depp backup depp.toml [-v]
+depp backup [-v]
 ```
 
-Backups are saved to:
+Backups are saved next to `depp.toml` (so under `deploy/` in the canonical
+layout):
 
 ```txt
 backups/
@@ -421,7 +565,7 @@ backups/
 > **Database caveat:** backup copies the live volume mountpoint with `rsync`.
 > For a *running* database, the on-disk data directory is not guaranteed to be
 > crash-consistent. For databases prefer a logical dump into a backed-up volume,
-> e.g. `depp exec depp.toml -- pg_dump … > /app/data/media/dump.sql`.
+> e.g. `depp exec -- pg_dump … > /app/data/media/dump.sql`.
 
 ### `depp restore`
 
@@ -430,7 +574,7 @@ Always takes a safety backup first — the restore is aborted if the backup fail
 The pod is stopped during the transfer and restarted afterwards.
 
 ```bash
-depp restore depp.toml RESTORE_PATH [-v] [--yes]
+depp restore [DEPLOY_TOML] RESTORE_PATH [-v] [--yes]
 ```
 
 `RESTORE_PATH` is a local directory whose **subdirectory names must match the
@@ -466,17 +610,20 @@ via SSH. If no command is given, opens an interactive shell (`/bin/sh` in
 the container, or a login shell with `--host`). Uses `podman exec` under
 the hood for container access.
 
-The target container is resolved from `deploy/kube.yaml`: the pod's only
-container, or the one named `app` when there are several. Pick a different
-one with `--container NAME` (the name as written in `kube.yaml`).
+The target container is resolved from `kube.yaml`: the pod's only container,
+or the one named `app` when there are several. Pick a different one with
+`--container NAME` (the name as written in `kube.yaml`). Put `--` before the
+command; when `DEPLOY_TOML` is omitted that is what tells depp where the
+command starts.
 
 ```bash
-depp exec depp.toml                                    # interactive shell in container
-depp exec depp.toml -- ls -la /app                     # run command in container
-depp exec depp.toml --container worker -- ps ax
-depp exec depp.toml --host                             # login shell on remote host
-depp exec depp.toml --host -- systemctl --user status  # run command on host
-cat local-dump.sql | depp exec depp.toml -- psql -U app appdb
+depp exec                                    # interactive shell in container
+depp exec -- ls -la /app                     # run command in container
+depp exec --container worker -- ps ax
+depp exec --host                             # login shell on remote host
+depp exec --host -- systemctl --user status  # run command on host
+cat local-dump.sql | depp exec -- psql -U app appdb
+depp exec path/to/depp.toml -- ls            # explicit configuration file
 ```
 
 A TTY is allocated whenever *both* stdin and stdout are terminals, on the SSH
@@ -486,7 +633,7 @@ echo, no CRLF translation). Creating a Django superuser in the running app
 container is just:
 
 ```bash
-depp exec depp.toml -- python manage.py createsuperuser
+depp exec -- python manage.py createsuperuser
 ```
 
 Override the detection with `-t`/`--tty` (force allocation) or `-T`/`--no-tty`
@@ -494,24 +641,26 @@ Override the detection with `-t`/`--tty` (force allocation) or `-T`/`--no-tty`
 non-interactive mode:
 
 ```bash
-depp exec depp.toml -- env DJANGO_SUPERUSER_PASSWORD=changeme \
+depp exec -- env DJANGO_SUPERUSER_PASSWORD=changeme \
   python manage.py createsuperuser --noinput --username admin --email admin@example.com
 ```
 
 ## CLI Reference
 
 ```bash
-depp provision DEPLOY_TOML [options]
-depp deploy DEPLOY_TOML [options]
-depp backup DEPLOY_TOML [options]
-depp restore DEPLOY_TOML RESTORE_PATH [options]
-depp reset DEPLOY_TOML [options]
-depp doctor DEPLOY_TOML [options]
-depp exec DEPLOY_TOML [options] [-- COMMAND ...]
+depp provision [DEPLOY_TOML] [options]
+depp deploy [DEPLOY_TOML] [options]
+depp backup [DEPLOY_TOML] [options]
+depp restore [DEPLOY_TOML] RESTORE_PATH [options]
+depp reset [DEPLOY_TOML] [options]
+depp doctor [DEPLOY_TOML] [options]
+depp exec [DEPLOY_TOML] [options] [-- COMMAND ...]
 ```
 
-Run `depp COMMAND --help` for command-specific options. `--host-key-policy`
-accepts `strict` (default), `accept-new`, or `insecure`.
+`DEPLOY_TOML` defaults to `./deploy/depp.toml`, then `./depp.toml`; without
+either, depp exits with status 1. Run `depp COMMAND --help` for
+command-specific options. `--host-key-policy` accepts `strict` (default),
+`accept-new`, or `insecure`.
 
 ### Connection modes
 
@@ -519,8 +668,8 @@ Commands use `--connection ssh` by default. For testing against the current
 machine, every command also accepts `--connection local`:
 
 ```bash
-depp deploy depp.toml --connection local --yes
-depp exec depp.toml --connection local -- python manage.py check
+depp deploy --connection local --yes
+depp exec --connection local -- python manage.py check
 ```
 
 Local mode keeps the configured FQDN as the Ansible inventory and application
@@ -552,6 +701,13 @@ depp uses these process exit statuses:
 | `1` | Configuration, validation, connection, or operation failed |
 | `2` | Command-line usage error reported by argparse |
 | `130` | Interrupted with Ctrl-C |
+
+## Upgrading from 0.0.1
+
+An app deployed with 0.0.1 keeps deploying with its `depp.toml`, `kube.yaml`
+and `.env` untouched. [UPGRADING.md](UPGRADING.md) lists the few things that
+do need action: the one breaking change, the deprecated key, and what a
+re-provision changes on the host.
 
 ## System Requirements
 
@@ -585,6 +741,14 @@ podman volume (myapp-private)/   # A named volume declared in kube.yaml
 podman volume (myapp-media)/     # Another named volume declared in kube.yaml
 ```
 
+Provisioning (as root) additionally writes:
+
+```txt
+/etc/apache2/sites-available/<fqdn>.conf   # Generated vhost (enabled via sites-enabled)
+/etc/apache2/depp/<fqdn>.vhost.conf        # Copy of deploy/vhost.conf, when present
+/var/www/depp/maintenance.html             # Page served while the pod restarts
+```
+
 ## Design Principles
 
 - **`kube.yaml` authored by developer**: Pod definition lives in the project repo
@@ -604,7 +768,13 @@ cd depp
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                 # test suite; no network, no host required
 .venv/bin/ruff check .           # lint
+.venv/bin/ansible-lint depp/     # playbooks, production profile
 ```
+
+`tests/expected/` holds the rendered systemd unit and Apache vhost for a
+project that uses no newer option. A template change that alters what an
+existing host gets shows up there as a reviewable diff; update the expected
+file only when that change is intended.
 
 The playbooks can be checked without a target host:
 
