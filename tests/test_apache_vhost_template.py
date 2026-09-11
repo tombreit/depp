@@ -6,14 +6,11 @@ X-Forwarded-Host reset breaks any app behind a second reverse proxy, and a
 host-hardcoded redirect bounces visitors off a ServerAlias.
 """
 
-from pathlib import Path
-
-import jinja2
-
-import depp
-
-TEMPLATE_DIR = Path(depp.__file__).parent / "ansible_provisioning" / "templates"
-TEMPLATE_NAME = "apache-vhost.conf.j2"
+from tests.template_render import (
+    VHOST_TEMPLATE,
+    VHOST_TEMPLATE_DIR,
+    render_template,
+)
 
 BASE_VARS = {
     "inventory_hostname": "app.example.com",
@@ -25,12 +22,9 @@ BASE_VARS = {
 
 
 def render(**overrides):
-    env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(TEMPLATE_DIR)),
-        trim_blocks=True,
-        keep_trailing_newline=True,
+    return render_template(
+        VHOST_TEMPLATE_DIR, VHOST_TEMPLATE, {**BASE_VARS, **overrides}
     )
-    return env.get_template(TEMPLATE_NAME).render({**BASE_VARS, **overrides})
 
 
 def directives(conf, name):

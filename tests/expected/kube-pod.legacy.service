@@ -1,0 +1,20 @@
+[Unit]
+Description=example pod (Podman Kube)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Redundant with ExecStop on a `systemctl restart` (the pod is already down by
+# then), but kept as the only teardown on a cold `start` after an unclean
+# shutdown — a stale pod would otherwise make `kube play` below fail. The `-`
+# ignores the no-op exit so it never blocks startup.
+ExecStartPre=-/usr/bin/podman kube down %h/config/example/kube.yaml
+ExecStart=/usr/bin/podman kube play \
+    --publish 127.0.0.1:8100:80 \
+    %h/config/example/kube.yaml
+ExecStop=/usr/bin/podman kube down %h/config/example/kube.yaml
+
+[Install]
+WantedBy=default.target

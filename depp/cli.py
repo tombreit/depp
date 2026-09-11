@@ -313,6 +313,7 @@ def run_provisioning(args: argparse.Namespace) -> int:
     return run_ansible_playbook(
         playbook_path=playbook,
         inventory=inventory,
+        extra_vars={},
         check_mode=args.check,
         verbose=args.verbose,
         ask_become_pass=args.ask_become_pass,
