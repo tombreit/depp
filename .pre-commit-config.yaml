@@ -1,7 +1,30 @@
 # Install once per clone: `pre-commit install` (installs both hook types below).
+# Pin the revs to the versions installed by the `dev` extras so pre-commit and
+# CI (.github/workflows/ci.yml) agree.
 default_install_hook_types: [pre-commit, commit-msg]
+# Hooks without an explicit `stages` run only at pre-commit, not again at commit-msg.
+default_stages: [pre-commit]
 
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        # Check only, like CI. Drop this to let the hook reformat in place.
+        args: [--check]
+
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v26.8.0
+    hooks:
+      - id: ansible-lint
+        # Upstream lints on every commit; only run when playbook material changed.
+        always_run: false
+        files: ^(depp/.*\.(ya?ml|j2|cfg)|\.ansible-lint)$
+        # Full `ansible` (not just ansible-core) so the community collections
+        # the playbooks use resolve, matching the runtime dependency.
+        additional_dependencies: ["ansible>=14,<15"]
+
   - repo: local
     hooks:
       - id: strip-claude-session-trailer
