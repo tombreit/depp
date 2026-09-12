@@ -6,9 +6,8 @@ Licensed under the EUPL-1.2-or-later. See the LICENSE file.
 
 from depp.cli import main
 
-# Single source of truth for the version: pyproject.toml reads it from here via
-# setuptools' dynamic `attr:` directive, and the CLI's --version flag reads the
-# resulting package metadata.
-__version__ = "0.0.1"
+# The version is not defined here: setuptools-scm derives it from the git tag at
+# build time and records it in the package metadata, which the CLI's --version
+# flag reads back via `importlib.metadata`. See `_read_version` in cli.py.
 
-__all__ = ["main", "__version__"]
+__all__ = ["main"]

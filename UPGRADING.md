@@ -3,7 +3,7 @@
 What an existing deployment must know when moving to a newer depp. Anything
 not listed here keeps working unchanged; the commit history has the rest.
 
-## Unreleased (after 0.0.1)
+## 26.9.12
 
 ### Breaking
 

@@ -29,7 +29,16 @@ systemd service unit from a bundled template.
 
 ### 1. Install depp
 
-Requires Python 3.12+ and Podman:
+Requires Python 3.12+ and Podman.
+
+Install directly from GitHub, without cloning. Replace `@v26.9.12` with another
+tag, a branch, or a commit SHA to pin a different version:
+
+```bash
+pip install "git+https://github.com/tombreit/depp.git@v26.9.12"
+```
+
+Or from a local clone of this repository:
 
 ```bash
 pip install .
@@ -37,18 +46,32 @@ pip install .
 pip install -e .
 ```
 
-Or install straight from this repo without cloning it. Replace `@v0.0.1` with
-another tag, a branch, or a commit SHA to pin a different version:
-
-```bash
-pip install "git+https://github.com/tombreit/depp.git@v0.0.1"
-```
-
 depp depends on the batteries-included Ansible community package, which
 supplies `ansible-core` and the collections used by the bundled playbooks.
 Installation is larger than an `ansible-core`-only setup, but commands never
 download Galaxy collections at runtime. No `kubectl` is required; the env
 ConfigMap is rendered in pure Python.
+
+#### Version numbers
+
+depp uses calendar versioning, derived from the git tag at build time. Check
+what is installed with:
+
+```bash
+depp --version
+```
+
+A tagged release reports the tag alone, for example `depp 26.9.12`. Any other
+build appends where it came from, so `depp 26.9.12.1.dev3+gabc1234.d20260915`
+reads as:
+
+| Part | Meaning |
+| --- | --- |
+| `26.9.12` | last tag, cut 2026-09-12 |
+| `.1` | second release cut that day |
+| `.dev3` | 3 commits after that tag |
+| `+gabc1234` | built from commit `abc1234` |
+| `.d20260915` | built from a tree with uncommitted changes |
 
 ### 2. Create deployment files
 

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=80"]
+requires = ["setuptools>=80", "setuptools-scm>=10"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -53,8 +53,17 @@ Issues = "https://github.com/tombreit/depp/issues"
 [project.scripts]
 depp = "depp:main"
 
-[tool.setuptools.dynamic]
-version = { attr = "depp.__version__" }
+[tool.setuptools_scm]
+# Calendar versioning: depp is an operator tool, not a library with an API
+# compatibility contract, so the release date says more than a semver triple.
+# The default local_scheme appends +g<commit> (and .d<date> when built from a
+# dirty tree), which is what `depp --version` reports.
+#
+# Deliberately no fallback_version: a placeholder would make a build with no
+# git history silently report a version that lies. Every supported install path
+# (see the README) builds from a real clone, so a build without git history is
+# a mistake and must fail loudly rather than ship a wrong version.
+version_scheme = "calver-by-date"
 
 [tool.setuptools.packages.find]
 where = ["."]

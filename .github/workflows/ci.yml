@@ -10,7 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # fetch-depth: 0 so setuptools-scm sees the tags it derives the
+      # version from; the default depth-1 clone has none.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Deliberately one version, not a matrix: depp is an operator tool run
       # from a single control node, not a library imported into other people's
