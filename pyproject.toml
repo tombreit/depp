@@ -9,8 +9,9 @@ readme = "README.md"
 license = "EUPL-1.2"
 license-files = ["LICENSE"]
 dynamic = ["version"]
-# Floor set by the `ansible` dependency below, which requires >=3.12.
-requires-python = ">=3.12"
+# Both ends come from the `ansible` dependency below: Ansible 14 requires >=3.12
+# and crashes on startup on 3.15, though its metadata does not say so.
+requires-python = ">=3.12,<3.15"
 authors = [
     { name = "Thomas Breitner", email = "mail@thms.de" },
 ]
@@ -20,10 +21,10 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
-    # No per-minor-version classifiers: CI tests only the newest stable
-    # Python, so listing 3.12 and 3.13 would advertise a verification that
-    # does not happen. `requires-python` above is still the install floor.
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Installation/Setup",
     "Topic :: System :: Systems Administration",
 ]
@@ -43,6 +44,8 @@ dev = [
     "ruff",
     "ansible-lint",
     "pre-commit",
+    # 4.21 added the [tool.tox] table used below.
+    "tox>=4.21",
 ]
 
 [project.urls]
@@ -74,6 +77,22 @@ include = ["depp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.tox]
+env_list = ["3.12", "3.13", "3.14"]
+# tox does not install Python itself. Locally, run what is available; CI turns
+# this off, so a job there cannot pass by skipping its only interpreter.
+skip_missing_interpreters = true
+
+[tool.tox.env_run_base]
+description = "Run every check on {env_name}"
+extras = ["dev"]
+commands = [
+    ["ruff", "check", "."],
+    ["ruff", "format", "--check", "."],
+    ["pytest", "-q"],
+    ["ansible-lint", "depp/"],
+]
 
 [tool.ruff]
 line-length = 88

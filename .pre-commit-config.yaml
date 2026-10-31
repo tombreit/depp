@@ -1,7 +1,7 @@
-# Install once per clone: `pre-commit install` (installs both hook types below).
+# Install once per clone: `pre-commit install` (installs all hook types below).
 # Pin the revs to the versions installed by the `dev` extras so pre-commit and
 # CI (.github/workflows/ci.yml) agree.
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 # Hooks without an explicit `stages` run only at pre-commit, not again at commit-msg.
 default_stages: [pre-commit]
 
@@ -33,3 +33,12 @@ repos:
         entry: "sed -i '/^Claude-Session: /d'"
         language: system
         stages: [commit-msg]
+      - id: pytest
+        name: pytest
+        # ruff and ansible-lint already ran at commit time. This covers one
+        # Python, the one in .venv; `tox` covers the others.
+        entry: .venv/bin/pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

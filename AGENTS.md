@@ -34,6 +34,6 @@ involved: the image is transferred directly.
 - Never pass secrets on a command line — they belong in the generated inventory
   or a ConfigMap, and tasks that touch them need `no_log: true`.
 - Build subprocess calls as argument lists; no `shell=True`.
-- Run `pytest`, `ruff check .`, `ruff format --check .` and `ansible-lint depp/`
-  before finishing. See the Development section
-  of the README for setup.
+- Run `tox` before finishing. It runs `pytest`, `ruff check .`,
+  `ruff format --check .` and `ansible-lint depp/` on each supported Python. See
+  the Development section of the README for setup.

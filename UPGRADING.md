@@ -13,6 +13,8 @@ not listed here keeps working unchanged; the commit history has the rest.
   declares neither is unaffected. One that already uses `ARG VERSION` or
   `ARG COMMIT` for something else, such as a base image tag, now gets depp's
   value: rename that `ARG`.
+- depp no longer installs on Python 3.15. Ansible 14 crashes on startup there,
+  so use Python 3.12 to 3.14.
 
 ## 26.9.12
 

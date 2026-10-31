@@ -29,7 +29,7 @@ systemd service unit from a bundled template.
 
 ### 1. Install depp
 
-Requires Python 3.12+ and Podman.
+Requires Python 3.12 to 3.14 and Podman.
 
 Install directly from GitHub, without cloning. Replace `@v26.9.12` with another
 tag, a branch, or a commit SHA to pin a different version:
@@ -771,7 +771,7 @@ re-provision changes on the host.
 
 ### Local (Control Node)
 
-- Python 3.12+
+- Python 3.12 to 3.14
 - Ansible (installed automatically as a Python dependency of depp)
 - Podman
 - Git
@@ -824,34 +824,36 @@ Provisioning (as root) additionally writes:
 git clone https://github.com/tombreit/depp.git
 cd depp
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pre-commit install     # git hooks: lint on commit, pytest on push
 .venv/bin/pytest                 # test suite; no network, no host required
 .venv/bin/ruff check .           # lint
 .venv/bin/ansible-lint depp/     # playbooks, production profile
+.venv/bin/tox                    # everything above, on each supported Python
 ```
+
+Run `pre-commit install` again after a change to the hook types in
+`.pre-commit-config.yaml`.
+
+`tox` builds the package and tests the result, so it also notices a file missing
+from the package data. It uses the Python versions already installed and skips
+the others. With a umask of `0002`, it refuses to start because it finds its own
+`.tox` directory group-writable. Create that directory once with
+`(umask 022; .venv/bin/tox)`, after removing any `.tox` left behind; later runs
+work under the normal umask.
 
 `tests/expected/` holds the rendered systemd unit and Apache vhost for a
 project that uses no newer option. A template change that alters what an
 existing host gets shows up there as a reviewable diff; update the expected
 file only when that change is intended.
 
-The playbooks can be checked without a target host:
+`pytest` also runs the real `ansible-playbook --syntax-check` on every bundled
+playbook (`tests/test_playbooks.py`), so a broken playbook, or an Ansible that
+cannot start, fails without a target host.
 
-```bash
-for playbook in depp/ansible_*/*.yml; do
-  ANSIBLE_CONFIG=depp/ansible_common/ansible.cfg \
-    .venv/bin/ansible-playbook --syntax-check "$playbook"
-done
-```
-
-CI (`.github/workflows/ci.yml`) runs these same checks plus
-`ruff format --check .` and `ansible-lint depp/` on every push and pull
-request — against a single Python version, the newest stable release
-(`python-version: "3.x"`). This is deliberate: depp is an operator tool run
-from one control node rather than a library embedded in other people's
-projects, so a matrix over older interpreters would cost CI time without
-protecting anyone. The `requires-python = ">=3.12"` floor in `pyproject.toml`
-is the `ansible` dependency's floor and stays installable, but it is not
-exercised in CI.
+CI (`.github/workflows/ci.yml`) runs `tox` on Python 3.12, 3.13 and 3.14 on every
+push and pull request. The versions are listed explicitly because a new Python
+can break Ansible on release day. Adding one means raising `requires-python`,
+`env_list` and the CI matrix together, once the `ansible` dependency supports it.
 
 ## Security
 
