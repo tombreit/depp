@@ -2,9 +2,11 @@
 
 import subprocess
 from argparse import Namespace
+from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 
 from depp import cli, doctor
+from depp.ansible_common import runner
 from depp.ansible_common.inventory import DeppConfig
 
 
@@ -55,6 +57,40 @@ def test_control_node_checks_report_missing_executable(monkeypatch):
     checks = doctor.control_node_checks(connection="local")
 
     assert not next(check for check in checks if check.name == "rsync").ok
+
+
+def test_control_node_checks_query_the_ansible_a_deploy_uses(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+
+    checks = doctor.control_node_checks(connection="local")
+
+    assert not {"ansible-playbook", "ansible-doc"} & {check.name for check in checks}
+    assert calls
+    for command, kwargs in calls:
+        assert command[: len(runner.ANSIBLE_DOC)] == runner.ANSIBLE_DOC
+        assert kwargs["env"]["ANSIBLE_COLLECTIONS_PATH"]
+
+
+def test_control_node_checks_skip_modules_without_ansible(monkeypatch):
+    def missing(_name):
+        raise PackageNotFoundError
+
+    monkeypatch.setattr(doctor, "version", missing)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: calls.append(a))
+
+    checks = doctor.control_node_checks(connection="local")
+
+    assert not next(check for check in checks if check.name == "Ansible package").ok
+    assert not calls
 
 
 def doctor_args(tmp_path, *, allow_dirty=False):

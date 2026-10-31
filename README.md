@@ -49,7 +49,9 @@ pip install -e .
 depp depends on the batteries-included Ansible community package, which
 supplies `ansible-core` and the collections used by the bundled playbooks.
 Installation is larger than an `ansible-core`-only setup, but commands never
-download Galaxy collections at runtime. No `kubectl` is required; the env
+download Galaxy collections at runtime. depp uses only that Ansible and those
+collections: another `ansible-playbook` on `PATH`, `~/.ansible/collections` and
+`ANSIBLE_COLLECTIONS_PATH` have no effect on it. No `kubectl` is required; the env
 ConfigMap is rendered in pure Python.
 
 #### Version numbers

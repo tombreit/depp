@@ -6,10 +6,10 @@ import copy
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +17,30 @@ import yaml
 
 from depp.ansible_common.ssh import host_key_options
 
-_ANSIBLE_PLAYBOOK = shutil.which("ansible-playbook") or "ansible-playbook"
+# Through depp's own interpreter, so this is always the Ansible installed with
+# depp, never another one on PATH. -P keeps the current directory off sys.path:
+# depp runs inside project directories, and `python -m` would otherwise import
+# an ansible.py or yaml.py from a cloned repo.
+_ANSIBLE = [sys.executable, "-P", "-m", "ansible"]
+_ANSIBLE_PLAYBOOK = [*_ANSIBLE, "playbook"]
+ANSIBLE_DOC = [*_ANSIBLE, "doc"]
 _ANSIBLE_CONFIG_PATH = Path(__file__).resolve().parent / "ansible.cfg"
+
+
+def ansible_env() -> dict[str, str]:
+    """Return the environment for every Ansible command depp starts."""
+    env = os.environ.copy()
+    # depp runs from inside the target project directory, and Ansible would
+    # otherwise auto-discover an ansible.cfg sitting there. That file can
+    # set library/roles_path/callback plugins, i.e. run arbitrary code from
+    # a cloned repo. Pin the config to our own bundled file instead.
+    env["ANSIBLE_CONFIG"] = str(_ANSIBLE_CONFIG_PATH)
+    # Only the collections installed with depp, not ~/.ansible/collections,
+    # which Ansible searches first. This must be an environment variable, which
+    # also overrides one set in the shell, and must never be empty: Ansible
+    # reads an empty value as the current directory, the project being deployed.
+    env["ANSIBLE_COLLECTIONS_PATH"] = str(distribution("ansible").locate_file(""))
+    return env
 
 
 def run_ansible_playbook(
@@ -76,7 +98,7 @@ def run_ansible_playbook(
     try:
         # Build ansible-playbook command
         cmd = [
-            _ANSIBLE_PLAYBOOK,
+            *_ANSIBLE_PLAYBOOK,
             "-i",
             tmp_path,
             "-e",
@@ -95,7 +117,7 @@ def run_ansible_playbook(
         cmd.append(str(playbook_path))
 
         # Run ansible-playbook
-        env = os.environ.copy()
+        env = ansible_env()
         if local_connection:
             env.pop("ANSIBLE_HOST_KEY_CHECKING", None)
         else:
@@ -103,11 +125,6 @@ def run_ansible_playbook(
                 "False" if host_key_policy == "insecure" else "True"
             )
         env["ANSIBLE_NOCOWS"] = "1"
-        # depp runs from inside the target project directory, and Ansible would
-        # otherwise auto-discover an ansible.cfg sitting there. That file can
-        # set library/roles_path/callback plugins, i.e. run arbitrary code from
-        # a cloned repo. Pin the config to our own bundled file instead.
-        env["ANSIBLE_CONFIG"] = str(_ANSIBLE_CONFIG_PATH)
         result = subprocess.run(cmd, env=env, check=False)
         return result.returncode
     finally:

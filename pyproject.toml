@@ -87,6 +87,10 @@ skip_missing_interpreters = true
 [tool.tox.env_run_base]
 description = "Run every check on {env_name}"
 extras = ["dev"]
+# ansible-lint does not go through depp's runner, and Ansible searches
+# ~/.ansible/collections first, so a copy there would shadow the bundled
+# collections that CI tests.
+set_env = { ANSIBLE_HOME = "{env_tmp_dir}/ansible" }
 commands = [
     ["ruff", "check", "."],
     ["ruff", "format", "--check", "."],

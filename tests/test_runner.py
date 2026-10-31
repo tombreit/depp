@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,6 @@ def test_runner_invokes_only_ansible_playbook(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
-    monkeypatch.setattr(runner, "_ANSIBLE_PLAYBOOK", "ansible-playbook")
 
     result = runner.run_ansible_playbook(
         playbook_path=playbook,
@@ -31,7 +31,7 @@ def test_runner_invokes_only_ansible_playbook(tmp_path, monkeypatch):
 
     assert result == 0
     assert len(calls) == 1
-    assert calls[0][0][0] == "ansible-playbook"
+    assert calls[0][0][:5] == [sys.executable, "-P", "-m", "ansible", "playbook"]
 
 
 def test_extra_vars_use_private_inventory_not_process_arguments(tmp_path, monkeypatch):
@@ -54,7 +54,6 @@ def test_extra_vars_use_private_inventory_not_process_arguments(tmp_path, monkey
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
-    monkeypatch.setattr(runner, "_ANSIBLE_PLAYBOOK", "ansible-playbook")
 
     result = runner.run_ansible_playbook(
         playbook_path=playbook,
@@ -110,7 +109,6 @@ def test_ansible_uses_host_key_policy(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
-    monkeypatch.setattr(runner, "_ANSIBLE_PLAYBOOK", "ansible-playbook")
 
     result = runner.run_ansible_playbook(
         playbook_path=playbook,
@@ -138,7 +136,6 @@ def test_local_connection_omits_ssh_policy(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
-    monkeypatch.setattr(runner, "_ANSIBLE_PLAYBOOK", "ansible-playbook")
 
     result = runner.run_ansible_playbook(
         playbook_path=playbook,
@@ -163,7 +160,6 @@ def test_ansible_config_is_pinned_to_the_bundled_file(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
-    monkeypatch.setattr(runner, "_ANSIBLE_PLAYBOOK", "ansible-playbook")
 
     runner.run_ansible_playbook(
         playbook_path=playbook,
@@ -177,3 +173,27 @@ def test_ansible_config_is_pinned_to_the_bundled_file(tmp_path, monkeypatch):
     # bundled file must actually ship with the package.
     assert config_path.is_file()
     assert config_path.suffix == ".cfg"
+
+
+def test_collections_are_pinned_to_the_installed_ansible(tmp_path, monkeypatch):
+    playbook = tmp_path / "playbook.yml"
+    playbook.write_text("---\n- hosts: all\n  tasks: []\n")
+    monkeypatch.setenv("ANSIBLE_COLLECTIONS_PATH", str(tmp_path))
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["path"] = kwargs["env"]["ANSIBLE_COLLECTIONS_PATH"]
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    runner.run_ansible_playbook(
+        playbook_path=playbook,
+        inventory={"all": {"hosts": {"example.com": {}}}},
+        extra_vars={},
+    )
+
+    # Never empty: Ansible reads that as the current directory, which is the
+    # project being deployed.
+    assert captured["path"]
+    assert (Path(captured["path"]) / "ansible_collections" / "containers").is_dir()

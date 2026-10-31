@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
+from depp.ansible_common.runner import ANSIBLE_DOC, ansible_env
+
 REQUIRED_MODULES = (
     "ansible.posix.authorized_key",
     "ansible.posix.synchronize",
@@ -38,11 +40,12 @@ class DoctorCheck:
 
 def control_node_checks(*, connection: str) -> list[DoctorCheck]:
     """Check required executables and Ansible modules without changing state."""
-    executable_names = ["git", "podman", "ansible-playbook", "ansible-doc", "rsync"]
+    executable_names = ["git", "podman", "rsync"]
     if connection == "ssh":
         executable_names.append("ssh")
 
     checks = []
+    ansible_installed = True
     try:
         ansible_version = version("ansible")
         ansible_major = int(ansible_version.split(".", 1)[0])
@@ -58,6 +61,7 @@ def control_node_checks(*, connection: str) -> list[DoctorCheck]:
             )
         )
     except (PackageNotFoundError, ValueError):
+        ansible_installed = False
         checks.append(DoctorCheck("Ansible package", False, "not installed"))
 
     for executable in executable_names:
@@ -70,11 +74,12 @@ def control_node_checks(*, connection: str) -> list[DoctorCheck]:
             )
         )
 
-    ansible_doc = shutil.which("ansible-doc")
-    if ansible_doc:
+    if ansible_installed:
+        env = ansible_env()
         for module in REQUIRED_MODULES:
             result = subprocess.run(
-                [ansible_doc, "--type", "module", module],
+                [*ANSIBLE_DOC, "--type", "module", module],
+                env=env,
                 capture_output=True,
                 text=True,
                 check=False,
