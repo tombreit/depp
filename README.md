@@ -829,7 +829,7 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pre-commit install     # git hooks: lint on commit, pytest on push
 .venv/bin/pytest                 # test suite; no network, no host required
 .venv/bin/ruff check .           # lint
-.venv/bin/ansible-lint depp/     # playbooks, production profile
+.venv/bin/ansible-lint           # playbooks, production profile
 .venv/bin/tox                    # everything above, on each supported Python
 ```
 

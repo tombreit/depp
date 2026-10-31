@@ -35,5 +35,5 @@ involved: the image is transferred directly.
   or a ConfigMap, and tasks that touch them need `no_log: true`.
 - Build subprocess calls as argument lists; no `shell=True`.
 - Run `tox` before finishing. It runs `pytest`, `ruff check .`,
-  `ruff format --check .` and `ansible-lint depp/` on each supported Python. See
+  `ruff format --check .` and `ansible-lint` on each supported Python. See
   the Development section of the README for setup.

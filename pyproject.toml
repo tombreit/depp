@@ -95,7 +95,7 @@ commands = [
     ["ruff", "check", "."],
     ["ruff", "format", "--check", "."],
     ["pytest", "-q"],
-    ["ansible-lint", "depp/"],
+    ["ansible-lint"],
 ]
 
 [tool.ruff]
