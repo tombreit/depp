@@ -362,7 +362,12 @@ check runs from the host through the loopback port and does not require
 1. Reads the full Git commit SHA and rejects uncommitted source unless
   `--allow-dirty` is explicit
 2. Builds the container image locally with `podman build`, using the configured
-  `containerfile` or the default `Containerfile`
+  `containerfile` or the default `Containerfile`. Passes the build args
+  `VERSION` (the image tag: the SHA, plus `-dirty-<id>` with `--allow-dirty`)
+  and `COMMIT` (the SHA). `.git` is not in the build context, so a Containerfile
+  that wants to know what it was built from declares `ARG VERSION` and
+  `ARG COMMIT`. Do not use those two names for anything else: depp overrides
+  them.
 3. Saves it as an OCI archive (`.tar`)
 4. Transfers it to the remote host (rsync)
 5. Ensures the named volumes declared in `kube.yaml` exist (`podman volume`)

@@ -3,6 +3,17 @@
 What an existing deployment must know when moving to a newer depp. Anything
 not listed here keeps working unchanged; the commit history has the rest.
 
+## Unreleased
+
+### Worth knowing
+
+- `depp deploy` now builds with `--build-arg VERSION=<image tag>` and
+  `--build-arg COMMIT=<full SHA>`, so an image can report what it was built
+  from even though `.git` is not in the build context. A Containerfile that
+  declares neither is unaffected. One that already uses `ARG VERSION` or
+  `ARG COMMIT` for something else, such as a base image tag, now gets depp's
+  value: rename that `ARG`.
+
 ## 26.9.12
 
 ### Breaking

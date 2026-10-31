@@ -555,6 +555,7 @@ def run_deployment(args: argparse.Namespace) -> int:
 
     extra_vars = {
         "app_version": app_version,
+        "app_commit": commit_hash,
         "local_repo_path": str(project_root),
         "local_kube_file": str(kube_file),
         "local_archive_dir": local_archive_dir,

@@ -1,10 +1,12 @@
 """Tests for deployment orchestration."""
 
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 import yaml
 
+import depp
 from depp import cli
 from depp.ansible_common.inventory import DeppConfig
 
@@ -99,6 +101,79 @@ def test_deployment_routes_configmap_through_private_vars(
     assert "do-not-expose" in captured["private_vars"]["configmap_yaml"]
     assert captured["host_key_policy"] == "strict"
     assert "chmod 600" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_deployment_passes_commit_and_image_version(tmp_path, monkeypatch, dirty):
+    commit = "a" * 40
+    project_root = tmp_path / "project"
+    write_project(project_root, "SECRET_KEY=irrelevant\n")
+
+    toml_path = tmp_path / "depp.toml"
+    toml_data = {
+        "app": {
+            "name": "example",
+            "image_name": "example",
+            "project_root": str(project_root),
+        },
+    }
+    inventory = {"all": {"hosts": {"example.com": {"health_path": "/"}}}}
+    captured = {}
+
+    monkeypatch.setattr(
+        cli,
+        "load_project",
+        lambda _args: (
+            toml_path,
+            make_config(toml_path, toml_data),
+            "example.com",
+            "example",
+        ),
+    )
+    monkeypatch.setattr(cli, "get_git_info", lambda _root: (commit, "Test"))
+    monkeypatch.setattr(cli, "check_git_dirty", lambda _root: dirty)
+    monkeypatch.setattr(cli, "build_inventory_or_exit", lambda *_args: inventory)
+
+    def fake_run_ansible_playbook(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "run_ansible_playbook", fake_run_ansible_playbook)
+
+    result = cli.run_deployment(
+        Namespace(
+            toml_file=toml_path,
+            check=True,
+            yes=True,
+            verbose=False,
+            host_key_policy="strict",
+            connection="ssh",
+            allow_dirty=dirty,
+        )
+    )
+
+    assert result == 0
+    # The commit stays a bare hash even when dirty; the version says so instead.
+    assert captured["extra_vars"]["app_commit"] == commit
+    if dirty:
+        assert captured["extra_vars"]["app_version"].startswith(f"{commit}-dirty-")
+    else:
+        assert captured["extra_vars"]["app_version"] == commit
+
+
+def test_image_build_receives_version_and_commit():
+    playbook = Path(depp.__file__).parent / "ansible_deploy" / "deploy.yml"
+    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    (build,) = [
+        task["containers.podman.podman_image"]
+        for block in tasks
+        for task in block.get("block", [])
+        if "containers.podman.podman_image" in task
+    ]
+
+    extra_args = build["build"]["extra_args"]
+    assert "--build-arg VERSION={{ app_version }}" in extra_args
+    assert "--build-arg COMMIT={{ app_commit }}" in extra_args
 
 
 def test_dirty_deployment_requires_explicit_override(tmp_path, monkeypatch, capsys):

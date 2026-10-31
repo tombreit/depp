@@ -6,9 +6,9 @@
 # container image directly (no registry required).
 #
 # Variables injected via the CLI wrapper:
-#   app_version, local_repo_path, local_archive_dir, local_kube_file — passed
-#   as extra vars (-e); the kube.yaml location is the CLI's decision (see
-#   depp/layout.py), not re-derived here
+#   app_version, app_commit, local_repo_path, local_archive_dir,
+#   local_kube_file — passed as extra vars (-e); the kube.yaml location is the
+#   CLI's decision (see depp/layout.py), not re-derived here
 #   pvc_volumes — passed as an extra var when applicable
 #   configmap_yaml — passed privately through the temporary inventory
 #   app_name, image_name, app_listen_port, host_loopback_port — embedded in
@@ -62,6 +62,9 @@
             build:
               file: "{{ build_file }}"
               force_rm: true
+              # .git stays out of the build context, so this is the only way
+              # an image can learn what it was built from.
+              extra_args: "--build-arg VERSION={{ app_version }} --build-arg COMMIT={{ app_commit }}"
 
         - name: Inspect Podman image
           containers.podman.podman_image_info:
