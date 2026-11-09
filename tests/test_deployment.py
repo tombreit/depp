@@ -176,6 +176,23 @@ def test_image_build_receives_version_and_commit():
     assert "--build-arg COMMIT={{ app_commit }}" in extra_args
 
 
+def test_check_mode_does_not_tag_the_unbuilt_image():
+    # Check mode builds and loads nothing; podman_tag fails on a missing
+    # source image, so `depp deploy --check` must skip the tag.
+    playbook = Path(depp.__file__).parent / "ansible_deploy" / "deploy.yml"
+    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    (tag,) = [
+        task
+        for block in tasks
+        for task in block.get("block", [])
+        if "containers.podman.podman_tag" in task
+    ]
+
+    when = tag.get("when", [])
+    conditions = [when] if isinstance(when, str) else when
+    assert "not ansible_check_mode" in conditions
+
+
 def test_dirty_deployment_requires_explicit_override(tmp_path, monkeypatch, capsys):
     toml_path = tmp_path / "depp.toml"
     toml_data = {"app": {"name": "example", "project_root": str(tmp_path)}}

@@ -191,11 +191,15 @@
             input: "{{ remote_image_archive_path }}"
           when: ansible_connection != "local"
 
+        # Check mode builds and loads nothing, so there is no image to tag.
+        # podman_tag (containers.podman >= 1.21) fails on a missing source
+        # image instead of skipping it, even in check mode.
         - name: "Tag image as latest: {{ image_tag }}"
           containers.podman.podman_tag:
             image: "{{ image_tag }}"
             target_names:
               - "{{ image_latest }}"
+          when: not ansible_check_mode
 
         - name: "Reload systemd and restart pod {{ service_name }}"
           ansible.builtin.systemd_service:
