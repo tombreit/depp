@@ -11,8 +11,9 @@
 #   CLI's decision (see depp/layout.py), not re-derived here
 #   pvc_volumes — passed as an extra var when applicable
 #   configmap_yaml — passed privately through the temporary inventory
-#   app_name, image_name, app_listen_port, host_loopback_port — embedded in
-#   the inventory
+#   app_name, image_name, app_listen_port, host_loopback_port,
+#   build_extra_args ([build.args] as shell-quoted --build-arg options) —
+#   embedded in the inventory
 
 - name: Deploy Application with Rootless Podman
   hosts: all
@@ -62,9 +63,13 @@
             build:
               file: "{{ build_file }}"
               force_rm: true
-              # .git stays out of the build context, so this is the only way
-              # an image can learn what it was built from.
-              extra_args: "--build-arg VERSION={{ app_version }} --build-arg COMMIT={{ app_commit }}"
+              # .git stays out of the build context, so VERSION and COMMIT are
+              # the only way an image can learn what it was built from. The
+              # project's [build.args] follow, already shell-quoted by the CLI;
+              # without them the command stays exactly as before.
+              extra_args: >-
+                --build-arg VERSION={{ app_version }} --build-arg COMMIT={{ app_commit }}{{
+                (' ' ~ build_extra_args) if build_extra_args | default('') else '' }}
 
         - name: Inspect Podman image
           containers.podman.podman_image_info:

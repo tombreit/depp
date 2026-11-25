@@ -176,6 +176,38 @@ def test_image_build_receives_version_and_commit():
     assert "--build-arg COMMIT={{ app_commit }}" in extra_args
 
 
+@pytest.mark.parametrize(
+    ("build_extra_args", "expected"),
+    [
+        # No [build.args]: the command is exactly what it was before them.
+        ("", "--build-arg VERSION=v1 --build-arg COMMIT=abc"),
+        (
+            "--build-arg SITE_URL=https://example.org",
+            "--build-arg VERSION=v1 --build-arg COMMIT=abc"
+            " --build-arg SITE_URL=https://example.org",
+        ),
+    ],
+)
+def test_image_build_appends_project_build_args(build_extra_args, expected):
+    jinja2 = pytest.importorskip("jinja2")
+    playbook = Path(depp.__file__).parent / "ansible_deploy" / "deploy.yml"
+    tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+    (build,) = [
+        task["containers.podman.podman_image"]
+        for block in tasks
+        for task in block.get("block", [])
+        if "containers.podman.podman_image" in task
+    ]
+
+    rendered = (
+        jinja2.Environment()
+        .from_string(build["build"]["extra_args"])
+        .render(app_version="v1", app_commit="abc", build_extra_args=build_extra_args)
+    )
+
+    assert rendered == expected
+
+
 def test_check_mode_does_not_tag_the_unbuilt_image():
     # Check mode builds and loads nothing; podman_tag fails on a missing
     # source image, so `depp deploy --check` must skip the tag.

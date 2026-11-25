@@ -124,10 +124,28 @@ contact_email = "admin@example.com"  # Required for Apache mod_md.
 certificate_authority = "https://acme-staging-v02.api.letsencrypt.org/directory"
 # Secret; prefer the operator config instead of committing it here.
 # external_account_binding = "kid hmac"
+
+# Optional. Values for the image build, see "Build args" below.
+# [build.args]
+# SITE_URL = "https://myapp.example.com"
 ```
 
 There is no `[backup]` section: depp backs up every volume your `kube.yaml`
 declares (see [Backups](#depp-backup)).
+
+#### Build args
+
+`[build.args]` hands per-deployment values to the image build: each entry
+becomes `podman build --build-arg NAME=value`, and the `Containerfile` reads it
+with `ARG NAME`. Use it for what has to be rendered at build time, such as
+documentation or assets that show the site's URL, so that the same project can
+be built for another deployment from that deployment's `depp.toml`. Names match
+`[A-Za-z_][A-Za-z0-9_]*`, values are strings. `VERSION` and `COMMIT` are
+reserved: depp sets them itself.
+
+**Build args are not secret.** They stay readable in the image's history
+(`podman history --no-trunc`), and the image is copied to the host. Secrets
+belong in `deploy/.env`, which reaches the pod only at runtime, as a ConfigMap.
 
 depp loads this file into one immutable validated configuration model before a
 command runs. Required tables, field types, paths, names, ports, health
@@ -369,7 +387,8 @@ check runs from the host through the loopback port and does not require
   and `COMMIT` (the SHA). `.git` is not in the build context, so a Containerfile
   that wants to know what it was built from declares `ARG VERSION` and
   `ARG COMMIT`. Do not use those two names for anything else: depp overrides
-  them.
+  them. Every entry of `[build.args]` follows as one more `--build-arg` (see
+  [Build args](#build-args)).
 3. Saves it as an OCI archive (`.tar`)
 4. Transfers it to the remote host (rsync)
 5. Ensures the named volumes declared in `kube.yaml` exist (`podman volume`)

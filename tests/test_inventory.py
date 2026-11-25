@@ -1,5 +1,6 @@
 """Tests for the inventory builders (depp/ansible_common/inventory.py)."""
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,12 @@ from depp.ansible_common.inventory import (
     DEPP_SSH_KEY_PATH,
     DeppConfig,
     build_backup_inventory,
+    build_extra_args,
     build_inventory,
     build_provisioning_inventory,
     build_restore_inventory,
     parse_acme_config,
+    parse_build_args,
     parse_deploy_config,
     parse_listen_port,
     parse_loopback_port,
@@ -286,3 +289,67 @@ def test_provisioning_inventory_defaults_deploy_user_to_fqdn():
         "app.example.com"
     ]
     assert host_vars["deploy_user"] == "app.example.com"
+
+
+def test_without_build_section_no_build_args():
+    assert config().build.args == ()
+    host_vars = build_inventory(config())["all"]["hosts"]["app.example.com"]
+    assert host_vars["build_extra_args"] == ""
+
+
+def test_build_args_reach_the_inventory_in_order():
+    cfg = config(
+        {
+            **TOML,
+            "build": {"args": {"SITE_URL": "https://example.org", "IP_RANGES": "10.1"}},
+        }
+    )
+    assert cfg.build.args == (
+        ("SITE_URL", "https://example.org"),
+        ("IP_RANGES", "10.1"),
+    )
+    host_vars = build_inventory(cfg)["all"]["hosts"]["app.example.com"]
+    assert host_vars["build_extra_args"] == (
+        "--build-arg SITE_URL=https://example.org --build-arg IP_RANGES=10.1"
+    )
+
+
+def test_build_extra_args_survive_shlex_split():
+    # containers.podman.podman_image splits extra_args with shlex.split.
+    args = (("TITLE", 'Lab\'s "data" site'), ("EMPTY", ""), ("LIST", "a, b"))
+    assert shlex.split(build_extra_args(args)) == [
+        "--build-arg",
+        'TITLE=Lab\'s "data" site',
+        "--build-arg",
+        "EMPTY=",
+        "--build-arg",
+        "LIST=a, b",
+    ]
+
+
+@pytest.mark.parametrize("bad_name", ["1ST", "SITE-URL", "SITE URL", ""])
+def test_build_args_reject_bad_names(bad_name):
+    with pytest.raises(ValueError, match="must match"):
+        parse_build_args({"args": {bad_name: "x"}})
+
+
+@pytest.mark.parametrize("reserved", ["VERSION", "COMMIT"])
+def test_build_args_reject_names_depp_sets(reserved):
+    with pytest.raises(ValueError, match="reserved"):
+        parse_build_args({"args": {reserved: "x"}})
+
+
+@pytest.mark.parametrize("bad_value", [8000, True, ["a"], "line\nbreak"])
+def test_build_args_reject_non_string_values(bad_value):
+    with pytest.raises(ValueError, match="must be a string"):
+        parse_build_args({"args": {"NAME": bad_value}})
+
+
+def test_build_args_must_be_a_table():
+    with pytest.raises(ValueError, match=r"\[build\] args must be a table"):
+        parse_build_args({"args": ["NAME=value"]})
+
+
+def test_build_section_rejects_unknown_keys():
+    with pytest.raises(ValueError, match=r"unknown key\(s\) in \[build\]: env"):
+        config({**TOML, "build": {"env": {"NAME": "value"}}})

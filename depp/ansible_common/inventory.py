@@ -1,6 +1,7 @@
 """Validated project configuration and Ansible inventory generation."""
 
 import re
+import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,11 @@ CADDY_HOST_PORT_DEPRECATION = (
 )
 CONNECTION_MODES = ("ssh", "local")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# [build.args] become `podman build --build-arg NAME=value`. depp passes VERSION
+# and COMMIT itself (deploy.yml), so a project may not set them.
+BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+RESERVED_BUILD_ARGS = frozenset({"VERSION", "COMMIT"})
 
 # The deployment user on the host defaults to the fqdn itself (one app, one
 # user, one vhost). useradd caps names at 32 characters, so the fqdn inherits
@@ -77,6 +83,13 @@ class DeployConfig:
 
 
 @dataclass(frozen=True)
+class BuildConfig:
+    # [build.args]: (name, value) pairs passed to `podman build --build-arg`,
+    # in the order of depp.toml.
+    args: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class DeppConfig:
     source_path: Path
     # Where kube.yaml, .env and vhost.conf live; see depp.layout.
@@ -88,17 +101,19 @@ class DeppConfig:
     # Human-readable notices about accepted-but-deprecated keys, printed once
     # by the CLI so a legacy depp.toml keeps working while saying what to rename.
     deprecations: tuple[str, ...] = ()
+    build: BuildConfig = BuildConfig()
 
     @classmethod
     def from_mapping(cls, source_path: Path, data: dict[str, Any]) -> "DeppConfig":
         source_path = source_path.resolve()
         if not isinstance(data, dict):
             raise ValueError("depp.toml root must be a table")
-        _reject_unknown(data, {"app", "host", "acme", "deploy"}, "depp.toml")
+        _reject_unknown(data, {"app", "host", "acme", "deploy", "build"}, "depp.toml")
         host_data = _table(data, "host")
         app_data = _table(data, "app")
         acme_data = _table(data, "acme")
         deploy_data = _table(data, "deploy", required=False)
+        build_data = _table(data, "build", required=False)
         _reject_unknown(
             app_data,
             {"name", "project_root", "image_name", "containerfile", "listen_port"},
@@ -115,6 +130,7 @@ class DeppConfig:
             "[acme]",
         )
         _reject_unknown(deploy_data, {"health_path", "health_timeout"}, "[deploy]")
+        _reject_unknown(build_data, {"args"}, "[build]")
 
         user = parse_host_user(host_data)
         fqdn = parse_host_fqdn(
@@ -170,6 +186,7 @@ class DeppConfig:
             ),
             deploy=DeployConfig(**deploy_values),
             deprecations=tuple(deprecations),
+            build=BuildConfig(args=parse_build_args(build_data)),
         )
 
     @property
@@ -370,6 +387,49 @@ def parse_deploy_config(deploy_cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_build_args(build_cfg: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Parse the optional [build.args] table from TOML.
+
+    Each entry becomes ``podman build --build-arg NAME=value``, so a project
+    can render per-deployment values into its image at build time. Values are
+    not secret: a build arg stays readable in the image's history.
+    """
+    args = build_cfg.get("args", {})
+    if not isinstance(args, dict):
+        raise ValueError("[build] args must be a table, e.g. [build.args]")
+    parsed = []
+    for name, value in args.items():
+        if not BUILD_ARG_NAME.fullmatch(name):
+            raise ValueError(
+                f"build arg name {name!r} in [build.args] must match "
+                f"{BUILD_ARG_NAME.pattern}."
+            )
+        if name in RESERVED_BUILD_ARGS:
+            raise ValueError(
+                f"build arg {name!r} in [build.args] is reserved: depp sets "
+                "VERSION and COMMIT itself."
+            )
+        if not isinstance(value, str) or has_control_characters(value):
+            raise ValueError(
+                f"build arg {name!r} in [build.args] must be a string without "
+                f"control characters (got {value!r})."
+            )
+        parsed.append((name, value))
+    return tuple(parsed)
+
+
+def build_extra_args(args: tuple[tuple[str, str], ...]) -> str:
+    """The [build.args] as one shell-quoted string of ``--build-arg`` options.
+
+    containers.podman.podman_image splits ``extra_args`` with ``shlex.split``,
+    so quoting here keeps values with spaces or quotes intact.
+    """
+    words = []
+    for name, value in args:
+        words += ["--build-arg", f"{name}={value}"]
+    return shlex.join(words)
+
+
 def _validate_port(value: Any, field: str) -> int:
     if (
         not isinstance(value, int)
@@ -493,6 +553,7 @@ def build_inventory(config: DeppConfig, connection: str = "ssh") -> dict[str, An
         "host_loopback_port": config.host.loopback_port,
         "health_path": config.deploy.health_path,
         "health_timeout": config.deploy.health_timeout,
+        "build_extra_args": build_extra_args(config.build.args),
     }
     _apply_connection(host_vars, config.host.user, connection, as_deploy_user=True)
 

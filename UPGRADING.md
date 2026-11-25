@@ -7,6 +7,12 @@ not listed here keeps working unchanged; the commit history has the rest.
 
 ### Worth knowing
 
+- New optional `[build.args]` table in `depp.toml`: per-deployment values that
+  `depp deploy` passes to the image build as `--build-arg NAME=value` (not
+  secret, they stay in the image's history). A project without it builds
+  exactly as before. Older depp releases reject a `depp.toml` that uses it
+  ("unknown key(s) in depp.toml: build").
+
 - `depp deploy` now builds with `--build-arg VERSION=<image tag>` and
   `--build-arg COMMIT=<full SHA>`, so an image can report what it was built
   from even though `.git` is not in the build context. A Containerfile that
