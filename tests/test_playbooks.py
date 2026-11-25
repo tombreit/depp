@@ -4,17 +4,25 @@ The playbooks are otherwise only exercised against a real host. These tests
 notice a syntax error, such as one in reset.yml, which deletes volume contents,
 and they notice when Ansible cannot start at all, for example on a Python
 version it does not support. The others check that depp starts the Ansible and
-the collections installed with it, whatever else is on the machine.
+the collections installed with it, whatever else is on the machine, and that
+project data in the inventory reaches a task verbatim instead of rendered.
 """
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import depp
-from depp.ansible_common.runner import _ANSIBLE_PLAYBOOK, ANSIBLE_DOC, ansible_env
+from depp.ansible_common.runner import (
+    _ANSIBLE_PLAYBOOK,
+    ANSIBLE_DOC,
+    Unsafe,
+    ansible_env,
+    run_ansible_playbook,
+)
 
 PLAYBOOKS = sorted(Path(depp.__file__).parent.glob("ansible_*/*.yml"))
 BUNDLED_MODULE = "containers.podman.podman_image"
@@ -68,6 +76,51 @@ def test_other_collections_do_not_shadow_the_bundled_ones(
     assert result.returncode == 0, result.stdout + result.stderr
     filename = json.loads(result.stdout)[BUNDLED_MODULE]["doc"]["filename"]
     assert not filename.startswith(str(tmp_path))
+
+
+def test_unsafe_values_reach_the_task_verbatim(tmp_path):
+    # Without !unsafe, Ansible renders the value: {{ 6 * 7 }} became 42, the
+    # comment vanished, and a lookup would run on the control node.
+    value = "x={{ 6 * 7 }} y={# gone #} z={% raw %}"
+    playbook = tmp_path / "playbook.yml"
+    playbook.write_text(
+        """\
+---
+- hosts: all
+  gather_facts: false
+  tasks:
+    - ansible.builtin.copy:
+        content: "{{ host_value }}"
+        dest: "{{ out_dir }}/host"
+        mode: "0600"
+    - ansible.builtin.copy:
+        content: "{{ private_value }}"
+        dest: "{{ out_dir }}/private"
+        mode: "0600"
+"""
+    )
+    inventory = {
+        "all": {
+            "hosts": {
+                "localhost": {
+                    "ansible_connection": "local",
+                    "ansible_python_interpreter": sys.executable,
+                    "host_value": Unsafe(value),
+                }
+            }
+        }
+    }
+
+    result = run_ansible_playbook(
+        playbook_path=playbook,
+        inventory=inventory,
+        extra_vars={"out_dir": str(tmp_path)},
+        private_vars={"private_value": Unsafe(value)},
+    )
+
+    assert result == 0
+    assert (tmp_path / "host").read_text() == value
+    assert (tmp_path / "private").read_text() == value
 
 
 @pytest.mark.parametrize("name", ["ansible.py", "yaml.py"])

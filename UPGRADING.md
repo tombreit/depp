@@ -7,6 +7,11 @@ not listed here keeps working unchanged; the commit history has the rest.
 
 ### Worth knowing
 
+- `deploy/.env` values now reach the pod's ConfigMap exactly as written.
+  Before, Ansible rendered them as templates: `{{ … }}` was evaluated and
+  `{# … #}` dropped, so a generated secret containing `{#` arrived cut short.
+  Redeploy if a value contains `{{`, `{%` or `{#`.
+
 - New optional `[build.args]` table in `depp.toml`: per-deployment values that
   `depp deploy` passes to the image build as `--build-arg NAME=value` (not
   secret, they stay in the image's history). A project without it builds

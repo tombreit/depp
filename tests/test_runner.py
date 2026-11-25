@@ -66,6 +66,42 @@ def test_extra_vars_use_private_inventory_not_process_arguments(tmp_path, monkey
     assert "vars" not in inventory["all"]
 
 
+def test_unsafe_values_are_tagged_in_the_inventory(tmp_path, monkeypatch):
+    # Ansible renders inventory strings as templates unless they are !unsafe.
+    playbook = tmp_path / "playbook.yml"
+    playbook.write_text("---\n- hosts: all\n  tasks: []\n")
+    value = "a {{ b }} {# c #}"
+    inventory = {"all": {"hosts": {"example.com": {"data": runner.Unsafe(value)}}}}
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.add_constructor(
+        "!unsafe", lambda loader, node: ("unsafe", loader.construct_scalar(node))
+    )
+
+    def fake_run(command, **_kwargs):
+        inventory_path = command[command.index("-i") + 1]
+        data = yaml.load(Path(inventory_path).read_text(encoding="utf-8"), Loader)
+
+        assert data["all"]["hosts"]["example.com"]["data"] == ("unsafe", value)
+        assert data["all"]["vars"]["secret"] == ("unsafe", value)
+        # depp's own values stay plain strings.
+        assert isinstance(data["all"]["vars"]["ansible_ssh_common_args"], str)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_ansible_playbook(
+        playbook_path=playbook,
+        inventory=inventory,
+        extra_vars={},
+        private_vars={"secret": runner.Unsafe(value)},
+    )
+
+    assert result == 0
+
+
 def test_configmap_copy_suppresses_sensitive_output():
     playbook_path = Path(depp.__file__).parent / "ansible_deploy" / "deploy.yml"
     play = yaml.safe_load(playbook_path.read_text())[0]

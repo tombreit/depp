@@ -9,6 +9,7 @@ import yaml
 import depp
 from depp import cli
 from depp.ansible_common.inventory import DeppConfig
+from depp.ansible_common.runner import Unsafe
 
 DEPLOY_MANIFEST = {
     "apiVersion": "v1",
@@ -99,6 +100,8 @@ def test_deployment_routes_configmap_through_private_vars(
         project_root / "deploy" / "kube.yaml"
     )
     assert "do-not-expose" in captured["private_vars"]["configmap_yaml"]
+    # Rendered by Ansible otherwise: a secret containing {# would be cut.
+    assert isinstance(captured["private_vars"]["configmap_yaml"], Unsafe)
     assert captured["host_key_policy"] == "strict"
     assert "chmod 600" in capsys.readouterr().err
 

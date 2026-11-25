@@ -40,7 +40,7 @@ from depp.ansible_common.inventory import (
     build_provisioning_inventory,
     build_restore_inventory,
 )
-from depp.ansible_common.runner import run_ansible_playbook
+from depp.ansible_common.runner import Unsafe, run_ansible_playbook
 from depp.ansible_common.ssh import HOST_KEY_POLICIES, host_key_options
 from depp.configmap import render_configmap
 from depp.doctor import DoctorCheck, control_node_checks
@@ -545,7 +545,8 @@ def run_deployment(args: argparse.Namespace) -> int:
 
     private_vars = {}
     if configmap_yaml is not None:
-        private_vars["configmap_yaml"] = configmap_yaml
+        # .env values are data: a secret containing {# must reach the pod as is.
+        private_vars["configmap_yaml"] = Unsafe(configmap_yaml)
 
     # Private per-run directory for the image archive: deploy.yml writes the
     # tar here instead of a predictable, shared /tmp path. Removed after the

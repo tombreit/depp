@@ -27,6 +27,25 @@ ANSIBLE_DOC = [*_ANSIBLE, "doc"]
 _ANSIBLE_CONFIG_PATH = Path(__file__).resolve().parent / "ansible.cfg"
 
 
+class Unsafe(str):
+    """A string Ansible passes on verbatim instead of rendering it.
+
+    Ansible renders every string in an inventory file as a Jinja template, so
+    ``{{ … }}`` in a value would run on the control node and ``{# … #}`` would
+    vanish. Values that come from the project, such as .env contents or build
+    args, are data: the inventory tags them ``!unsafe``.
+    """
+
+
+class _InventoryDumper(yaml.SafeDumper):
+    pass
+
+
+_InventoryDumper.add_representer(
+    Unsafe, lambda dumper, value: dumper.represent_scalar("!unsafe", str(value))
+)
+
+
 def ansible_env() -> dict[str, str]:
     """Return the environment for every Ansible command depp starts."""
     env = os.environ.copy()
@@ -92,7 +111,9 @@ def run_ansible_playbook(
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yml", prefix="podman_deploy_inv_", delete=False
     ) as tmp:
-        yaml.safe_dump(inventory_data, tmp, default_flow_style=False)
+        yaml.dump(
+            inventory_data, tmp, Dumper=_InventoryDumper, default_flow_style=False
+        )
         tmp_path = tmp.name
 
     try:
