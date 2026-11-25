@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from depp.ansible_common.runner import Unsafe
 from depp.layout import (
     ENV_FILENAME,
     KUBE_MANIFEST_FILENAME,
@@ -39,9 +40,11 @@ CONNECTION_MODES = ("ssh", "local")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # [build.args] become `podman build --build-arg NAME=value`. depp passes VERSION
-# and COMMIT itself (deploy.yml), so a project may not set them.
+# and COMMIT itself (deploy.yml), so a project may not set them. The DEPP_
+# prefix stays free for build args depp may pass later, such as the fqdn.
 BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_BUILD_ARGS = frozenset({"VERSION", "COMMIT"})
+RESERVED_BUILD_ARG_PREFIX = "DEPP_"
 
 # The deployment user on the host defaults to the fqdn itself (one app, one
 # user, one vhost). useradd caps names at 32 characters, so the fqdn inherits
@@ -409,6 +412,11 @@ def parse_build_args(build_cfg: dict[str, Any]) -> tuple[tuple[str, str], ...]:
                 f"build arg {name!r} in [build.args] is reserved: depp sets "
                 "VERSION and COMMIT itself."
             )
+        if name.startswith(RESERVED_BUILD_ARG_PREFIX):
+            raise ValueError(
+                f"build arg {name!r} in [build.args] is reserved: names starting "
+                f"with {RESERVED_BUILD_ARG_PREFIX} are kept for depp's own build args."
+            )
         if not isinstance(value, str) or has_control_characters(value):
             raise ValueError(
                 f"build arg {name!r} in [build.args] must be a string without "
@@ -553,7 +561,8 @@ def build_inventory(config: DeppConfig, connection: str = "ssh") -> dict[str, An
         "host_loopback_port": config.host.loopback_port,
         "health_path": config.deploy.health_path,
         "health_timeout": config.deploy.health_timeout,
-        "build_extra_args": build_extra_args(config.build.args),
+        # !unsafe: Ansible would otherwise render {{ ... }} in a value.
+        "build_extra_args": Unsafe(build_extra_args(config.build.args)),
     }
     _apply_connection(host_vars, config.host.user, connection, as_deploy_user=True)
 

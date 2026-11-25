@@ -529,6 +529,12 @@ def run_deployment(args: argparse.Namespace) -> int:
         f"{display_message}",
         f"Project:    {project_root}",
         f"Build file: {containerfile.relative_to(project_root)}",
+    ]
+    # Baked into the image, so a wrong value is worth catching before the build.
+    # Not secret (README), one per line because values may contain commas.
+    for index, (name, value) in enumerate(config.build.args):
+        lines.append(f"{'Build args:' if index == 0 else '':<12}{name}={value}")
+    lines += [
         f"Target:     {fqdn}",
         f"Connection: {connection}",
         f"Env file:   {config.display(env_path) if env_path.exists() else 'none'}",

@@ -10,10 +10,11 @@
 #   local_kube_file — passed as extra vars (-e); the kube.yaml location is the
 #   CLI's decision (see depp/layout.py), not re-derived here
 #   pvc_volumes — passed as an extra var when applicable
-#   configmap_yaml — passed privately through the temporary inventory
+#   configmap_yaml — passed privately through the temporary inventory, tagged
+#   !unsafe
 #   app_name, image_name, app_listen_port, host_loopback_port,
-#   build_extra_args ([build.args] as shell-quoted --build-arg options) —
-#   embedded in the inventory
+#   build_extra_args ([build.args] as shell-quoted --build-arg options, tagged
+#   !unsafe) — embedded in the inventory
 
 - name: Deploy Application with Rootless Podman
   hosts: all
@@ -65,8 +66,9 @@
               force_rm: true
               # .git stays out of the build context, so VERSION and COMMIT are
               # the only way an image can learn what it was built from. The
-              # project's [build.args] follow, already shell-quoted by the CLI;
-              # without them the command stays exactly as before.
+              # project's [build.args] follow, already shell-quoted by the CLI
+              # and tagged !unsafe, so Ansible never renders a value; without
+              # them the command stays exactly as before.
               extra_args: >-
                 --build-arg VERSION={{ app_version }} --build-arg COMMIT={{ app_commit }}{{
                 (' ' ~ build_extra_args) if build_extra_args | default('') else '' }}

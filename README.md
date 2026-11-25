@@ -140,8 +140,13 @@ becomes `podman build --build-arg NAME=value`, and the `Containerfile` reads it
 with `ARG NAME`. Use it for what has to be rendered at build time, such as
 documentation or assets that show the site's URL, so that the same project can
 be built for another deployment from that deployment's `depp.toml`. Names match
-`[A-Za-z_][A-Za-z0-9_]*`, values are strings. `VERSION` and `COMMIT` are
-reserved: depp sets them itself.
+`[A-Za-z_][A-Za-z0-9_]*`, values are strings and arrive exactly as written,
+`{{` and quotes included. `VERSION` and `COMMIT` are reserved: depp sets them
+itself. Names starting with `DEPP_` are reserved for build args depp may set in
+the future. The deployment summary lists the build args before the build starts.
+
+Declare each `ARG` as late in the `Containerfile` as you can: a changed value
+rebuilds only the steps after its `ARG`, not the ones before.
 
 **Build args are not secret.** They stay readable in the image's history
 (`podman history --no-trunc`), and the image is copied to the host. Secrets

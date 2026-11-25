@@ -22,6 +22,7 @@ from depp.ansible_common.inventory import (
     parse_loopback_port,
     parse_server_aliases,
 )
+from depp.ansible_common.runner import Unsafe
 
 TOML = {
     "host": {"fqdn": "app.example.com", "loopback_port": 8300},
@@ -312,6 +313,8 @@ def test_build_args_reach_the_inventory_in_order():
     assert host_vars["build_extra_args"] == (
         "--build-arg SITE_URL=https://example.org --build-arg IP_RANGES=10.1"
     )
+    # Tagged !unsafe in the inventory, so Ansible passes it on verbatim.
+    assert isinstance(host_vars["build_extra_args"], Unsafe)
 
 
 def test_build_extra_args_survive_shlex_split():
@@ -333,7 +336,7 @@ def test_build_args_reject_bad_names(bad_name):
         parse_build_args({"args": {bad_name: "x"}})
 
 
-@pytest.mark.parametrize("reserved", ["VERSION", "COMMIT"])
+@pytest.mark.parametrize("reserved", ["VERSION", "COMMIT", "DEPP_FQDN", "DEPP_"])
 def test_build_args_reject_names_depp_sets(reserved):
     with pytest.raises(ValueError, match="reserved"):
         parse_build_args({"args": {reserved: "x"}})

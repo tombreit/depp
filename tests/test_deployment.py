@@ -103,7 +103,9 @@ def test_deployment_routes_configmap_through_private_vars(
     # Rendered by Ansible otherwise: a secret containing {# would be cut.
     assert isinstance(captured["private_vars"]["configmap_yaml"], Unsafe)
     assert captured["host_key_policy"] == "strict"
-    assert "chmod 600" in capsys.readouterr().err
+    output = capsys.readouterr()
+    assert "chmod 600" in output.err
+    assert "Build args" not in output.out
 
 
 @pytest.mark.parametrize("dirty", [False, True])
@@ -370,7 +372,15 @@ def test_deploy_dir_layout_resolves_files_next_to_the_toml(
         "load_project",
         lambda _args: (
             toml_path,
-            make_config(toml_path, {"app": {"name": "example"}}),
+            make_config(
+                toml_path,
+                {
+                    "app": {"name": "example"},
+                    "build": {
+                        "args": {"SITE_URL": "https://example.org", "LIST": "a, b"}
+                    },
+                },
+            ),
             "example.com",
             "example",
         ),
@@ -409,3 +419,5 @@ def test_deploy_dir_layout_resolves_files_next_to_the_toml(
     out = capsys.readouterr().out
     assert "Env file:   deploy/.env" in out
     assert "Kube:       deploy/kube.yaml" in out
+    # One per line, aligned with the other values: a value may hold commas.
+    assert "Build args: SITE_URL=https://example.org\n              LIST=a, b\n" in out
